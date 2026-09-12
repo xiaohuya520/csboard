@@ -243,10 +243,13 @@ static void render_status(void)
     }
     lv_label_set_text(s_bar_l, buf);
 
+    // 来源字符串由数据管道给(现在是 "bo3.gg"),不可能在固件里穷举;
+    // 所以只特判「缓存/手机/内置」,其余一律算网络,不要误显示成"示例"。
     const char *src = cs_data_source();
-    const char *srcn = ieq(src, "net") ? "网络"
-                     : ieq(src, "cache") ? "缓存"
-                     : ieq(src, "手机") ? "手机" : "示例";
+    const char *srcn = ieq(src, "cache") ? "缓存"
+                     : ieq(src, "手机") ? "手机"
+                     : ieq(src, "builtin") ? "示例"
+                     : (src && src[0]) ? "网络" : "示例";
     const char *pssid = cs_portal_ssid();
     if (cs_portal_active()) {
         snprintf(buf, sizeof(buf), "门户 %s", pssid);

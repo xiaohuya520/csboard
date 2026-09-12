@@ -205,28 +205,43 @@ class NameCache:
         todo = [i for i in ids if i and i != "None" and i not in table]
         if not todo:
             return
+
         # 先试批量。filter[<表>.id][in]= 是否支持没实测过,所以用 total.count 校验:
         # bo3 对不支持的过滤是「静默忽略」而不是报错,不看 count 会拿到全表。
-        chunk = todo[:60]
-        d = api_soft("%s?filter%%5B%s.id%%5D%%5Bin%%5D=%s&page%%5Blimit%%5D=%d"
-                     % (key, key, ",".join(chunk), len(chunk)))
+        # 必须整批循环着做 —— 只处理第一块的话,143 支队里会有 83 支解析不到,
+        # 界面上就成了 "T759" 这种占位符。
+        batch_ok = None
         got = 0
-        if d and (d.get("total") or {}).get("count") == len(chunk):
-            for r in d.get("results") or []:
-                if r.get("name"):
-                    table[str(r["id"])] = r["name"]
-                    got += 1
-        if not got:
-            for tid in chunk[:40]:
-                d = api_soft("%s?filter%%5B%s.id%%5D%%5Beq%%5D=%s" % (key, key, tid))
-                for r in (d or {}).get("results") or []:
-                    if r.get("name"):
-                        table[str(r["id"])] = r["name"]
-                        got += 1
-                time.sleep(0.05)
+        pos = 0
+        while pos < len(todo):
+            chunk = todo[pos:pos + 60]
+            pos += 60
+            n = 0
+            if batch_ok is not False:
+                d = api_soft("%s?filter%%5B%s.id%%5D%%5Bin%%5D=%s&page%%5Blimit%%5D=%d"
+                             % (key, key, ",".join(chunk), len(chunk)))
+                if d and (d.get("total") or {}).get("count") == len(chunk):
+                    for r in d.get("results") or []:
+                        if r.get("name"):
+                            table[str(r["id"])] = r["name"]
+                            n += 1
+                    batch_ok = True
+            if not n:
+                # 批量不通(或这一块没结果),退回逐条查
+                if batch_ok is None:
+                    batch_ok = False
+                for tid in chunk:
+                    d = api_soft("%s?filter%%5B%s.id%%5D%%5Beq%%5D=%s" % (key, key, tid))
+                    for r in (d or {}).get("results") or []:
+                        if r.get("name"):
+                            table[str(r["id"])] = r["name"]
+                            n += 1
+                    time.sleep(0.05)
+            got += n
         if got:
             self.dirty = True
-        print("  resolved %d/%d %s names" % (got, len(todo), key))
+        print("  resolved %d/%d %s names (batch=%s)"
+              % (got, len(todo), key, {True: "yes", False: "no"}.get(batch_ok, "n/a")))
 
     def teams_of(self, ids) -> None:
         self._resolve(self.teams, "teams", sorted({str(i) for i in ids}))

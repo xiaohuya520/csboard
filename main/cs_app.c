@@ -412,7 +412,7 @@ static void build_net(lv_obj_t *p)
     scpy(item0, sizeof(item0), s_portal_on ? "关闭配网门户" : "打开配网门户");
     items[0] = item0;
     items[1] = "选择 Wi-Fi 网络";
-    items[2] = "立即拉取数据";
+    items[2] = cs_net_online() ? "立即拉取数据" : "重新连接 Wi-Fi";
     items[3] = "清除数据缓存";
 
     for (int i = 0; i < NET_ITEMS; i++) {
@@ -596,7 +596,14 @@ static void key_net(bsp_btn_t btn, bsp_btn_ev_t ev)
                 cs_net_scan();
                 break;
             case 2:
-                s_want_refresh = true;
+                // 没联网时这一项自动变成「重新连接 Wi-Fi」——三个键的设备不该再多一个入口,
+                // 而断线之后用户最想做的就是重连。
+                if (cs_net_online()) {
+                    s_want_refresh = true;
+                } else {
+                    cs_net_state_reset();
+                    cs_net_autoconnect();
+                }
                 break;
             default:
                 cs_data_clear_cache();
@@ -676,6 +683,11 @@ void cs_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 {
     // 双击/长按之后驱动可能补报一次 CLICK:按"次数"精确吞掉那一颗。
     // 就算漏吞了也无所谓 —— 单击只会触发一次幂等刷新,不会改变页面。
+    // 上下键只认「按下」这一个事件:一次物理按下,驱动会先后给出 PRESS_DOWN 和
+    // SINGLE_CLICK,两者都当移动指令就必然跳两格(这就是用户说的「像双击」)。
+    if (btn != BSP_BTN_OK && ev != BSP_BTN_PRESS) return;
+
+    // 双击/长按之后驱动可能补报一次 CLICK:按次数精确吞掉那一颗。
     if (ev == BSP_BTN_CLICK) {
         if (s_ignore_click) { s_ignore_click = false; return; }
     } else if (ev == BSP_BTN_DOUBLE || ev == BSP_BTN_LONG) {

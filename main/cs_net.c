@@ -58,6 +58,7 @@ static const struct {
 #define CS_SCAN_MAX_MS   220
 #define CS_BACKOFF_MIN   30        // 失败退避起点(秒)
 #define CS_BACKOFF_MAX   300       // 退避上限,同时也是成功后的轮询间隔
+#define CS_RETRY_TICKS   4         // 断线重连节拍基数:4 x 200ms = 0.8s,按次数递增
 
 // ---------------------------------------------------------------------------
 // 状态
@@ -84,6 +85,7 @@ static char             s_scan_msg[48];
 static char             s_conn_err[48];
 static int              s_conn_watch;
 static int              s_retry_watch;      // 断线自动重连的节拍
+static int              s_retry_pending = -1;  // >0 时倒数几拍后重连;断线回调只登记不硬连
 
 static cs_diag_t        s_diag;
 static char             s_custom_url[192];
@@ -177,19 +179,31 @@ static void ensure_dns(void)
 // ---------------------------------------------------------------------------
 // Wi-Fi
 // ---------------------------------------------------------------------------
+// 把 reason 翻成一句人话。对照 ESP-IDF wifi_err_reason_t:
+//   200 信标超时 / 201 扫不到 / 202 认证失败 / 203-205 关联被路由器拒 /
+//   206-207 路由器侧漫游 / 208-209 AP 没回 SA query /
+//   210-212 扫到了同名 AP,但加密方式或信号门槛不满足。
+// 210 保留数字:它最常见的成因是路由器开了 WPA3/PMF,或存在同名开放热点。
 static void conn_err_set(int reason)
 {
     switch (reason) {
-    case 15:  scpy(s_conn_err, sizeof(s_conn_err), "密码可能不对");     break;
-    case 2:   scpy(s_conn_err, sizeof(s_conn_err), "认证超时,信号弱");  break;
-    case 201: scpy(s_conn_err, sizeof(s_conn_err), "找不到这个网络");   break;
-    case 202: scpy(s_conn_err, sizeof(s_conn_err), "认证失败");         break;
+    case 2:   scpy(s_conn_err, sizeof(s_conn_err), "认证超时,信号弱");   break;
+    case 15:  scpy(s_conn_err, sizeof(s_conn_err), "密码可能不对");       break;
+    case 200: scpy(s_conn_err, sizeof(s_conn_err), "信号不稳,靠近些");    break;
+    case 201: scpy(s_conn_err, sizeof(s_conn_err), "扫不到该网络");       break;
+    case 202: scpy(s_conn_err, sizeof(s_conn_err), "密码可能不对");       break;
     case 203:
     case 204:
-    case 205: scpy(s_conn_err, sizeof(s_conn_err), "连接被路由器拒绝"); break;
-    case 200: scpy(s_conn_err, sizeof(s_conn_err), "信号不稳,靠近些");  break;
+    case 205: scpy(s_conn_err, sizeof(s_conn_err), "连接被路由器拒绝");   break;
+    case 206:
+    case 207: scpy(s_conn_err, sizeof(s_conn_err), "路由器切换中");       break;
+    case 208:
+    case 209: scpy(s_conn_err, sizeof(s_conn_err), "路由器响应超时");     break;
     default:
-        snprintf(s_conn_err, sizeof(s_conn_err), "连接失败(代码%d)", reason % 1000);
+        if (reason >= 210 && reason <= 212)
+            snprintf(s_conn_err, sizeof(s_conn_err), "加密不兼容(%d)", reason);
+        else
+            snprintf(s_conn_err, sizeof(s_conn_err), "连接失败 代码%d", reason);
         break;
     }
 }
@@ -200,20 +214,27 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     if (id != WIFI_EVENT_STA_DISCONNECTED) return;
 
     const wifi_event_sta_disconnected_t *d = (const wifi_event_sta_disconnected_t *)data;
-    ESP_LOGW(TAG, "Wi-Fi 断开, reason=%d", d ? (int)d->reason : -1);
+    int reason = d ? (int)d->reason : -1;
+    ESP_LOGW(TAG, "Wi-Fi 断开, reason=%d rssi=%d", reason, d ? (int)d->rssi : 0);
     s_ip[0] = 0;
     if (s_scan_busy) return;                  // 扫描期间不自动重连,否则会打断扫描
+    if (s_state != CS_NET_CONNECTING && s_state != CS_NET_ONLINE) return;
 
-    if (s_state == CS_NET_CONNECTING || s_state == CS_NET_ONLINE) {
-        if (d) conn_err_set((int)d->reason);
-        if (s_reconnect < 3) {
-            s_reconnect++;
-            s_state = CS_NET_CONNECTING;
-            esp_wifi_connect();
-        } else {
-            s_state = CS_NET_FAILED;
-            s_retry_watch = 0;
-        }
+    conn_err_set(reason);
+
+    // 不在这里直接 esp_wifi_connect():本回调跑在系统事件任务上,同步重连会把它压住;
+    // 而且刚断开就抢连,在 201/210 这类本轮没扫到的场景下毫无意义。
+    // 只登记一个递增延迟,由 cs_net_tick() 去连。
+    s_state = CS_NET_CONNECTING;
+    s_conn_watch = 0;
+    if (s_reconnect < 4) {
+        s_reconnect++;
+        s_retry_pending = CS_RETRY_TICKS * s_reconnect;   // 0.8 / 1.6 / 2.4 / 3.2 秒
+    } else {
+        s_retry_pending = -1;
+        s_state = CS_NET_FAILED;                          // 转入 30s 慢速重连
+        s_retry_watch = 0;
+        ESP_LOGW(TAG, "连续重连失败,转入慢速重试");
     }
 }
 
@@ -315,6 +336,8 @@ void cs_net_state_reset(void)
     s_scan_msg[0] = 0;
     s_conn_err[0] = 0;
     s_conn_watch = 0;
+    s_reconnect = 0;
+    s_retry_pending = -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,13 +425,18 @@ void cs_net_connect(const char *ssid, const char *password)
     s_conn_err[0] = 0;
     s_conn_watch = 0;
     s_reconnect = 0;
+    s_retry_pending = -1;
 
     wifi_config_t wc;
     memset(&wc, 0, sizeof(wc));
     scpy((char *)wc.sta.ssid, sizeof(wc.sta.ssid), ssid);
     if (password) scpy((char *)wc.sta.password, sizeof(wc.sta.password), password);
-    wc.sta.threshold.authmode = (password && password[0]) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    wc.sta.scan_method = WIFI_FAST_SCAN;
+    // authmode 不做门槛过滤:门槛一旦把 AP 筛掉,报出来的 reason 和"没这个网"长得一样,
+    // 极难排查。密码对不对交给握手阶段判,原因更准。
+    wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    // 全信道扫描。FAST_SCAN 沿用上次连接的信道,路由器一换信道就永远找不到 AP ——
+    // 这正是"第一次能连、过一会断了就再也连不上"最常见的成因。
+    wc.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     wc.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     // WPA3 混合模式的路由器少了 PMF capable 会握手失败(表现为"密码明明对却连不上")。
     wc.sta.pmf_cfg.capable  = true;
@@ -434,9 +462,23 @@ void cs_net_autoconnect(void)
     wifi_config_t wc;
     memset(&wc, 0, sizeof(wc));
     if (esp_wifi_get_config(WIFI_IF_STA, &wc) != ESP_OK || !wc.sta.ssid[0]) return;
+
+    // 每次都重新下发这几项。NVS 里存的可能是上一版固件写下的 FAST_SCAN + 高 authmode 门槛,
+    // 那正是"断一次以后再也连不上"的元凶,不能沿用。
+    wc.sta.scan_method        = WIFI_ALL_CHANNEL_SCAN;
+    wc.sta.sort_method        = WIFI_CONNECT_AP_BY_SIGNAL;
+    wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    wc.sta.pmf_cfg.capable    = true;
+    wc.sta.pmf_cfg.required   = false;
+    esp_wifi_set_config(WIFI_IF_STA, &wc);
+
     scpy(s_ssid, sizeof(s_ssid), (const char *)wc.sta.ssid);
     s_reconnect = 0;
+    s_conn_err[0] = 0;
+    s_conn_watch = 0;
+    s_retry_pending = -1;
     s_state = CS_NET_CONNECTING;
+    esp_wifi_disconnect();      // 先收干净再连,避免上一次的残留状态参与
     esp_wifi_connect();
     ESP_LOGI(TAG, "用已保存凭证连接 %s", s_ssid);
 }
@@ -449,6 +491,7 @@ void cs_net_forget(void)
     s_prev_ssid[0] = 0;
     s_ssid[0] = 0;
     s_ip[0] = 0;
+    s_retry_pending = -1;
     if (s_wifi_started) esp_wifi_disconnect();
     s_state = CS_NET_READY;
 }
@@ -721,6 +764,13 @@ const char *cs_net_diag_text(void) { return diag_word(s_diag); }
 // ---------------------------------------------------------------------------
 void cs_net_tick(void)
 {
+    // --- 延迟重连:断线回调只登记,真正 esp_wifi_connect() 在这里做 ---
+    if (s_retry_pending > 0 && --s_retry_pending == 0) {
+        s_retry_pending = -1;
+        ESP_LOGI(TAG, "重连 %s(第 %d 次)", s_ssid[0] ? s_ssid : "已存网络", s_reconnect);
+        esp_wifi_connect();
+    }
+
     // --- 连接看门狗:卡在 CONNECTING 超 20s 判失败,界面永远有出口 ---
     if (s_state == CS_NET_CONNECTING) {
         if (++s_conn_watch >= 100) {

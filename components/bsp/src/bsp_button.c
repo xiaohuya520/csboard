@@ -5,6 +5,7 @@
 #include "iot_button.h"
 #include "button_adc.h"
 #include "esp_adc/adc_oneshot.h"
+#include "esp_timer.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
@@ -28,10 +29,21 @@ static adc_cali_handle_t         s_cali;
 #define BSP_BTN_ATTEN  ADC_ATTEN_DB_12       // 量程约 0~3100mV,覆盖松开态
 
 // 每个按键把"哪个键"随回调带回来。button 组件的回调签名固定,故用 usr_data 传索引。
+static int64_t s_last_press_us[BSP_BTN_COUNT];
+
 static void on_event(void *arg, void *usr_data, bsp_btn_ev_t ev) {
     (void)arg;
     if (!s_cb) return;
-    s_cb((bsp_btn_t)(intptr_t)usr_data, ev, s_user);
+    int idx = (int)(intptr_t)usr_data;
+
+    // ADC 分压键的触点抖动可能连着给出两次 PRESS_DOWN,一次按下就变成跳两格。
+    // 80ms 内同一键的重复 PRESS 一律丢弃 —— 人手最快也快不过这个间隔。
+    if (ev == BSP_BTN_PRESS) {
+        int64_t now = esp_timer_get_time();
+        if (now - s_last_press_us[idx] < 80000) return;
+        s_last_press_us[idx] = now;
+    }
+    s_cb((bsp_btn_t)idx, ev, s_user);
 }
 static void cb_press (void *a, void *u) { on_event(a, u, BSP_BTN_PRESS);  }
 static void cb_click (void *a, void *u) { on_event(a, u, BSP_BTN_CLICK);  }

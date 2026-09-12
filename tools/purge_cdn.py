@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """清 jsDelivr 上 cs_matches.json 的缓存,并等到 CDN 内容与本地文件一致。
 
-jsDelivr purge 端点的三个坑(都踩过):
+jsDelivr purge 端点的坑(全部实测踩过):
   1. 只接受 GET,POST 会 405。
-  2. 返回 200 **不代表真的清掉了**。响应体里 per-path 会有
+  2. 返回 200 **不代表真的清掉了**。响应体 per-path 里可能是
      {"throttled": true, "throttlingReset": N} —— 节流期间 purge 是空转的,
-     CDN 继续吐旧数据,而 HTTP 状态码照样 200。这正是之前"每次都 purge ok,
-     线上数据却停在几小时前"的原因:刷新脚本一轮一清,全被节流。
-     处理:看到 throttled 就按 throttlingReset 退避后重试。
-  3. 清完不是立刻生效,一般要几十秒才能取到新版,所以要轮询比对 md5。
+     CDN 继续吐旧数据,而 HTTP 状态码照样 200。这正是之前"每轮都 purge ok、
+     线上数据却停在几小时前"的原因:刷得越勤,越是被节流。
+  3. 配额很紧,实测大约 10 次/小时的滚动窗口,超了 throttlingReset 会一下
+     跳到 3000+ 秒(将近一小时)。所以这里**一次调用最多清两遍**:
+     第一遍被节流就按 reset 退避后再来一次,之后只轮询比对,绝不再清 ——
+     反复清只会把节流窗口越顶越长。
+  4. 清完不是立刻生效:边缘节点会先短暂 404 再回源,一般几十秒后才拿到新版。
 
-用法:python3 tools/purge_cdn.py cs_matches.json [--repo owner/name] [--settle 20] [--max-wait 900]
+退出码:0=CDN 已是最新;1=超时未同步(数据本身没问题,下轮再清);2=被节流。
+被节流时会打印 RESET=<秒>,调用方据此把下次清理时间推后。
+
+用法:python3 tools/purge_cdn.py cs_matches.json [--settle 20] [--max-wait 600]
 """
 import argparse
 import hashlib
@@ -29,8 +35,21 @@ def fetch(url, timeout=30):
         return resp.read()
 
 
-def md5_remote(url):
-    return hashlib.md5(fetch(url)).hexdigest()
+def one_purge(purge_url, key):
+    """清一次,返回 (throttled, reset_seconds)。"""
+    try:
+        body = json.loads(fetch(purge_url).decode())
+    except urllib.error.HTTPError as exc:
+        print(f"purge HTTP {exc.code} {exc.read().decode()[:120]}")
+        return False, 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"purge err {exc!r:.120}")
+        return False, 0
+    info = (body.get("paths") or {}).get(key) or {}
+    reset = int(info.get("throttlingReset") or 0)
+    thr = bool(info.get("throttled"))
+    print(f"purge: throttled={thr} reset={reset}s")
+    return thr, reset
 
 
 def main():
@@ -38,53 +57,51 @@ def main():
     ap.add_argument("path")
     ap.add_argument("--repo", default="xiaohuya520/csboard")
     ap.add_argument("--branch", default="main")
-    ap.add_argument("--settle", type=int, default=20, help="purge 后等多少秒再去比对")
-    ap.add_argument("--max-wait", type=int, default=900, help="最多折腾多少秒")
+    ap.add_argument("--settle", type=int, default=20, help="两次比对之间等多少秒")
+    ap.add_argument("--max-wait", type=int, default=600, help="最多轮询多少秒")
     a = ap.parse_args()
 
     rel = a.path.split("/")[-1]
-    cdn = f"https://cdn.jsdelivr.net/gh/{a.repo}@{a.branch}/{rel}"
-    purge = f"https://purge.jsdelivr.net/gh/{a.repo}@{a.branch}/{rel}"
+    key = f"/gh/{a.repo}@{a.branch}/{rel}"
+    cdn = f"https://cdn.jsdelivr.net{key}"
+    purge = f"https://purge.jsdelivr.net{key}"
 
     want = hashlib.md5(open(a.path, "rb").read()).hexdigest()
     deadline = time.time() + a.max_wait
-    round_no = 0
 
-    while time.time() < deadline:
-        round_no += 1
-        throttled, reset = False, 0
-        try:
-            body = json.loads(fetch(purge).decode())
-            info = (body.get("paths") or {}).get(f"/gh/{a.repo}@{a.branch}/{rel}") or {}
-            throttled = bool(info.get("throttled"))
-            reset = int(info.get("throttlingReset") or 0)
-            print(f"purge #{round_no}: throttled={throttled} reset={reset}s")
-        except urllib.error.HTTPError as exc:
-            print(f"purge #{round_no}: HTTP {exc.code} {exc.read().decode()[:120]}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"purge #{round_no}: err {exc!r:.120}")
-
-        if throttled and reset > 0:
-            left = deadline - time.time()
-            if reset + 5 >= left:
-                print("节流窗口比剩余时间还长,放弃,留给下一轮")
-                return 1
-            print(f"被节流,等 {reset + 5}s 再试")
+    thr, reset = one_purge(purge, key)
+    if thr and reset > 0:
+        print(f"RESET={reset}")
+        left = deadline - time.time()
+        if reset + 5 < left:
+            print(f"被节流,等 {reset + 5}s 后重试一次")
             time.sleep(reset + 5)
-            continue
+            thr, reset = one_purge(purge, key)
+            if thr:
+                print(f"RESET={reset}")
+                print("仍在节流窗口内,放弃(再清只会把窗口顶得更长)")
+                return 2
+        else:
+            print("节流窗口比剩余时间还长,放弃,留给下一轮")
+            return 2
 
+    # 之后只轮询比对,不再消耗配额
+    while time.time() < deadline:
         time.sleep(a.settle)
         try:
-            got = md5_remote(cdn)
-        except Exception as exc:  # noqa: BLE001
-            print(f"cdn fetch err {exc!r:.120}")
+            got = hashlib.md5(fetch(cdn)).hexdigest()
+        except urllib.error.HTTPError as exc:
+            print(f"cdn HTTP {exc.code}(刚清完的边缘节点会短暂 404,正常)")
             continue
-        print(f"  local={want} cdn={got} {'MATCH' if got == want else 'still old'}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"cdn err {exc!r:.120}")
+            continue
+        print(f"local={want} cdn={got} {'MATCH' if got == want else 'still old'}")
         if got == want:
             print("CDN 已是最新版本")
             return 0
 
-    print("超时:CDN 仍未同步到最新版(不影响本轮数据,下轮继续清)")
+    print("超时:CDN 仍未同步到最新版(数据本身已进仓库,下轮继续清)")
     return 1
 
 

@@ -44,6 +44,6 @@ jobs:
       - name: Refresh loop
         env:
           REFRESH_EVERY: "480"
-          PURGE_EVERY: "720"
+          PURGE_EVERY: "900"
           RUN_FOR: "6900"
         run: bash .github/refresh_loop.sh

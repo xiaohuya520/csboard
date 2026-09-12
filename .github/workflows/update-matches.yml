@@ -56,18 +56,22 @@ jobs:
 
       # jsDelivr 会缓存分支内容,更新后必须主动清一次;
       # 注意 purge 端点只接受 GET(POST 会 405)。
-      # jsDelivr 会缓存分支内容,更新后必须主动清一次;
-      # 注意 purge 端点只接受 GET(POST 会 405),而且第一次 GET 拿到的往往还是旧内容
-      # (purge 是异步的),所以隔一会儿再拉一次确认是否真的生效。
+      # jsDelivr 会缓存分支内容,更新后必须主动清一次。
+      # 关键:清缓存要走专门的 purge 端点,而且只接受 GET(POST 会 405)。
+      # 光是 GET 一遍 cdn.jsdelivr.net 是**不会**清缓存的 —— 之前就踩过这个坑,
+      # 结果线上一直是旧数据,看着像"管道没跑"。
       - name: Purge jsDelivr cache
         if: steps.commit.outputs.changed == 'true'
         run: |
-          URL="https://cdn.jsdelivr.net/gh/${{ github.repository }}@main/cs_matches.json"
-          for host in cdn fastly gcore testingcf; do
-            curl -fsS --max-time 20 "https://${host}.jsdelivr.net/gh/${{ github.repository }}@main/cs_matches.json" \
-              -o /dev/null && echo "purged via ${host}" || echo "purge via ${host} failed (ignored)"
-          done
-          sleep 25
+          curl -fsS --max-time 30 \
+            "https://purge.jsdelivr.net/gh/${{ github.repository }}@main/cs_matches.json" \
+            && echo "purge ok" || echo "purge failed (ignored)"
+          sleep 20
           echo "--- verify ---"
-          curl -fsS --max-time 20 "$URL" | head -c 200 || echo "verify fetch failed"
-          echo
+          for host in cdn fastly gcore; do
+            printf '%-8s ' "$host"
+            curl -fsS --max-time 20 \
+              "https://${host}.jsdelivr.net/gh/${{ github.repository }}@main/cs_matches.json" \
+              | head -c 90 || echo "fetch failed"
+            echo
+          done

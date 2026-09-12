@@ -370,8 +370,11 @@ esp_err_t cs_portal_start(void)
         httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
         hc.max_uri_handlers = 8;
         hc.lru_purge_enable = true;
-        hc.recv_timeout_sec = 10;
-        hc.stack_size = 6144;
+        // 字段名是 recv_wait_timeout / send_wait_timeout(秒),不是 recv_timeout_sec。
+        // 手机 POST 一整份 JSON 时读得慢,给到 10s。
+        hc.recv_wait_timeout = 10;
+        hc.send_wait_timeout = 10;
+        hc.stack_size = 8192;
         if (httpd_start(&s_srv, &hc) != ESP_OK) {
             s_srv = NULL;
             ESP_LOGE(TAG, "HTTP 服务器启动失败");

@@ -218,6 +218,11 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     ESP_LOGW(TAG, "Wi-Fi 断开, reason=%d rssi=%d", reason, d ? (int)d->rssi : 0);
     s_ip[0] = 0;
     if (s_scan_busy) return;                  // 扫描期间不自动重连,否则会打断扫描
+
+    // reason 8 = ASSOC_LEAVE,是我们自己调 esp_wifi_disconnect() 造成的,
+    // 不是故障。官方也建议这种情况不要自动重连,否则永远断不干净。
+    if (reason == 8) return;
+
     if (s_state != CS_NET_CONNECTING && s_state != CS_NET_ONLINE) return;
 
     conn_err_set(reason);

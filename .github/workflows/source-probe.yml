@@ -1,0 +1,66 @@
+name: source-probe
+
+# 临时探测:从 GitHub 运行器的网络里,看哪些 CS2 数据源可达、且带地图名/每图比分。
+# 结论用于决定 update_matches.py 的数据源方向。用完即删。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe sources
+        run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+          probe() {
+            NAME="$1"; URL="$2"; shift 2
+            CODE=$(curl -sS -o /tmp/b -w '%{http_code}' -m 30 -A "$UA" "$@" "$URL" 2>/tmp/e || true)
+            SIZE=$(wc -c < /tmp/b 2>/dev/null || echo 0)
+            HITS=$(grep -oiE 'mirage|inferno|nuke|ancient|anubis|dust2|overpass|vertigo|train' /tmp/b 2>/dev/null | sort -u | tr '\n' ' ')
+            echo "=========================================================="
+            echo "== $NAME"
+            echo "   url    = $URL"
+            echo "   http   = $CODE   bytes = $SIZE"
+            echo "   mapwds = [$HITS]"
+            head -c 260 /tmp/b 2>/dev/null | tr -d '\r\n' | sed 's/^/   body: /'
+            echo
+            if [ -s /tmp/e ]; then head -c 200 /tmp/e | sed 's/^/   err : /'; echo; fi
+          }
+
+          echo "### runner egress IP"
+          curl -sS -m 20 https://api.ipify.org || true
+          echo
+          echo
+
+          probe "sofascore-list (control)" \
+            "https://www.sofascore.com/api/v1/category/1572/scheduled-events/2026-09-12"
+
+          probe "hltv results page" \
+            "https://www.hltv.org/results?offset=0"
+
+          probe "hltv match page" \
+            "https://www.hltv.org/matches/2383080/navi-vs-vitality"
+
+          probe "hltv api-ish stats" \
+            "https://www.hltv.org/stats/matches/mapstatsid/178000/navi-vs-vitality"
+
+          probe "hltv community mirror" \
+            "https://hltv-api.vercel.app/api/results.json"
+
+          probe "bo3.gg api (origin hdr)" \
+            "https://api.bo3.gg/api/v1/matches?page%5Blimit%5D=3&sort=start_date%3Adesc" \
+            -H "Origin: https://bo3.gg" -H "Referer: https://bo3.gg/"
+
+          probe "liquipedia api (gzip)" \
+            "https://liquipedia.net/counterstrike/api.php?action=query&meta=siteinfo&format=json" \
+            -H "Accept-Encoding: gzip"
+
+          probe "pandascore (no key)" \
+            "https://api.pandascore.co/csgo/matches"
+
+          echo
+          echo "### done"

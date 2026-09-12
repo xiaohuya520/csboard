@@ -1,10 +1,20 @@
 name: Update matches
 
-# 定时把 Sofascore 的 CS2 赛程/比分抓成 cs_matches.json 提交到 main 分支。
-# 必须放在默认分支上:GitHub 只认默认分支的 schedule。
+# 把 CS2 赛程/比分抓成 cs_matches.json 提交到 main 分支。
+#
+# 三个触发源,schedule 只是其中之一 —— GitHub 的定时触发并不保证一定发生
+# (实测本仓库挂了 10 小时、cron 是 */10,运行次数却是 0)。所以额外加了 push:
+# 推一次 .github/data-ping.txt 就能确定性地跑一轮。
+# 注意:workflow_dispatch 需要 Actions 写权限,手上的 token 没有,别指望它。
 on:
   schedule:
     - cron: "*/10 * * * *"
+  push:
+    branches: [main]
+    paths:
+      - ".github/data-ping.txt"
+      - "tools/update_matches.py"
+      - ".github/workflows/update-matches.yml"
   workflow_dispatch:
 
 permissions:
@@ -30,15 +40,17 @@ jobs:
       - name: Commit when changed
         id: commit
         run: |
-          if git diff --quiet -- cs_matches.json; then
+          # bo3_cache.json 是队名/赛事名的本地缓存,提交上去下轮就不用重查几十次接口。
+          git add -A cs_matches.json tools/bo3_cache.json
+          if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "no change"
             exit 0
           fi
           git config user.name  "csboard-bot"
           git config user.email "csboard-bot@users.noreply.github.com"
-          git add cs_matches.json
           git commit -m "data: refresh CS2 matches"
+          git pull --rebase --autostash origin main
           git push
           echo "changed=true" >> "$GITHUB_OUTPUT"
 

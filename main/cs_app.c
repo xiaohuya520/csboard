@@ -5,6 +5,7 @@
 #include "cs_logos.h"
 #include "cs_net.h"
 #include "cs_portal.h"
+#include "bsp_battery.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -67,7 +68,10 @@ static bool             s_prev_scanbusy;
 static uint32_t         s_seen_rev = 0xFFFFFFFFu;
 
 static lv_obj_t *s_scr;
-static lv_obj_t *s_bar_l, *s_bar_c, *s_bar_r, *s_bar_line;
+static lv_obj_t *s_bar_l, *s_bar_c, *s_bar_r, *s_bar_batt, *s_bar_line;
+static int      s_batt_soc = -2;   // -2=还没读过, -1=读不到, 其余=百分比
+static int      s_batt_age;        // 距上次读电量过了几个渲染节拍
+static bool     s_batt_ok;         // CW2017 是否在位
 static lv_obj_t *s_content;
 static lv_obj_t *s_hint;
 
@@ -260,6 +264,21 @@ static void render_status(void)
     char tm[8];
     cs_time_hhmm(tm, sizeof(tm));
     lv_label_set_text(s_bar_r, tm);
+
+    // 电量:每 2s 读一次就够(不必跟着 200ms 渲染节拍去打扰 I2C)。
+    // 读不到(芯片不在位/没电池)就留空,不占位误导。
+    if (++s_batt_age >= 10 || s_batt_soc == -2) {
+        s_batt_age = 0;
+        s_batt_soc = s_batt_ok ? bsp_battery_soc() : -1;
+    }
+    if (s_batt_soc >= 0) {
+        snprintf(buf, sizeof(buf), "%d%%", s_batt_soc > 100 ? 100 : s_batt_soc);
+        lv_label_set_text(s_bar_batt, buf);
+        uint32_t bc = s_batt_soc <= 15 ? C_RED : (s_batt_soc <= 40 ? C_AMBER : C_GREEN);
+        lv_obj_set_style_text_color(s_bar_batt, lv_color_hex(bc), 0);
+    } else {
+        lv_label_set_text(s_bar_batt, "");
+    }
 
     uint32_t lc = C_MUTED;
     cs_fetch_state_t fs = cs_data_fetch_state();
@@ -756,23 +775,32 @@ void cs_app_start(void)
 {
     cs_logos_init();
 
+    // 电量计可能没焊/没电池,失败就整项不显示,不留占位误导。
+    s_batt_ok = (bsp_battery_init() == ESP_OK);
+    if (!s_batt_ok) ESP_LOGW(TAG, "CW2017 不在位,状态栏不显示电量");
+
     s_scr = lv_obj_create(NULL);
     lv_obj_remove_flag(s_scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(s_scr, lv_color_hex(C_BG), 0);
     lv_obj_set_style_border_width(s_scr, 0, 0);
     lv_obj_set_style_pad_all(s_scr, 0, 0);
 
+    // 四个槽:视图名 | 网络状态 | 时间 | 电量。给电量让出 32px。
     s_bar_l = label(s_scr, 6, 4, "", &font_cn16, C_INK);
-    lv_obj_set_width(s_bar_l, 66);
-    one_line(s_bar_l, 66);
+    lv_obj_set_width(s_bar_l, 58);
+    one_line(s_bar_l, 58);
 
-    s_bar_c = label(s_scr, 74, 4, "", &font_cn16, C_MUTED);
-    lv_obj_set_width(s_bar_c, 108);
-    one_line(s_bar_c, 108);
+    s_bar_c = label(s_scr, 66, 4, "", &font_cn16, C_MUTED);
+    lv_obj_set_width(s_bar_c, 94);
+    one_line(s_bar_c, 94);
 
-    s_bar_r = label(s_scr, 186, 5, "", &lv_font_montserrat_14, C_MUTED);
-    lv_obj_set_width(s_bar_r, 48);
+    s_bar_r = label(s_scr, 162, 5, "", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_set_width(s_bar_r, 40);
     lv_obj_set_style_text_align(s_bar_r, LV_TEXT_ALIGN_RIGHT, 0);
+
+    s_bar_batt = label(s_scr, 204, 5, "", &lv_font_montserrat_14, C_MUTED);
+    lv_obj_set_width(s_bar_batt, 32);
+    lv_obj_set_style_text_align(s_bar_batt, LV_TEXT_ALIGN_RIGHT, 0);
 
     s_bar_line = panel(s_scr, 0, BAR_H - 2, SCR_W, 2, C_MUTED, C_MUTED, 0);
 

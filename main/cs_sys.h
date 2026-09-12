@@ -5,6 +5,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 
 // NVS(默认分区)。幂等。
 esp_err_t cs_sys_nvs(void);

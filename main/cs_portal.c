@@ -248,6 +248,26 @@ static esp_err_t h_refresh(httpd_req_t *r)
     return httpd_resp_sendstr(r, "已开始拉取");
 }
 
+// 安全拼接:不依赖 snprintf 的返回值,天然规避 -Wformat-truncation。
+typedef struct { char *b; size_t cap; size_t len; } sbuf_t;
+
+static void sb_puts(sbuf_t *s, const char *t)
+{
+    if (!s || !t || s->cap == 0) return;
+    size_t n = strlen(t);
+    if (s->len + n > s->cap - 1) n = s->cap - 1 - s->len;
+    memcpy(s->b + s->len, t, n);
+    s->len += n;
+    s->b[s->len] = 0;
+}
+
+static void sb_puti(sbuf_t *s, int v)
+{
+    char t[16];
+    snprintf(t, sizeof(t), "%d", v);
+    sb_puts(s, t);
+}
+
 static esp_err_t h_scan(httpd_req_t *r)
 {
     // 阻塞式扫描,最多等 9s;单用户场景够用,也让网页逻辑简单。
@@ -255,14 +275,21 @@ static esp_err_t h_scan(httpd_req_t *r)
     for (int i = 0; i < 45 && cs_net_scan_busy(); i++) vTaskDelay(pdMS_TO_TICKS(200));
 
     char buf[900];
-    int off = 0;
-    off += snprintf(buf + off, sizeof(buf) - (size_t)off, "[");
-    for (int i = 0; i < cs_net_ap_count() && off < (int)sizeof(buf) - 80; i++) {
-        off += snprintf(buf + off, sizeof(buf) - (size_t)off, "%s{\"ssid\":\"%s\",\"rssi\":%d,\"sec\":%d}",
-                        i ? "," : "", cs_net_ap_ssid(i), cs_net_ap_rssi(i),
-                        cs_net_ap_secure(i) ? 1 : 0);
+    buf[0] = 0;
+    sbuf_t sb = { buf, sizeof(buf), 0 };
+
+    sb_puts(&sb, "[");
+    for (int i = 0; i < cs_net_ap_count(); i++) {
+        sb_puts(&sb, i ? ",{\"ssid\":\"" : "{\"ssid\":\"");
+        sb_puts(&sb, cs_net_ap_ssid(i));
+        sb_puts(&sb, "\",\"rssi\":");
+        sb_puti(&sb, cs_net_ap_rssi(i));
+        sb_puts(&sb, ",\"sec\":");
+        sb_puti(&sb, cs_net_ap_secure(i) ? 1 : 0);
+        sb_puts(&sb, "}");
     }
-    snprintf(buf + off, sizeof(buf) - (size_t)off, "]");
+    sb_puts(&sb, "]");
+
     httpd_resp_set_type(r, "application/json");
     return httpd_resp_sendstr(r, buf);
 }

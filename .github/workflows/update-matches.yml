@@ -16,6 +16,7 @@ on:
     paths:
       - ".github/data-ping.txt"
       - "tools/update_matches.py"
+      - "tools/purge_cdn.py"
       - ".github/refresh_loop.sh"
       - ".github/workflows/update-matches.yml"
   workflow_dispatch:
@@ -43,5 +44,6 @@ jobs:
       - name: Refresh loop
         env:
           REFRESH_EVERY: "480"
+          PURGE_EVERY: "720"
           RUN_FOR: "6900"
         run: bash .github/refresh_loop.sh

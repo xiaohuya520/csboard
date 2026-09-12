@@ -6,18 +6,24 @@
 # 光靠 cron 是撑不起"实时比分"的,而 workflow_dispatch 又要 Actions 写权限(手上 token 没有)。
 # 所以改成:只要抢到一次运行机会,就把这段时间用满 —— 进来后自己按间隔轮询,
 # 一直跑到 RUN_FOR 秒为止。push 触发走的是同一条路径,手动戳一下也能续上近两小时。
+#
+# 刷新和清缓存是两件事,节奏故意不一样:
+#   数据  每 8 分钟刷一次(仓库里的 json 尽量新)
+#   缓存  至少隔 12 分钟才清一次 —— jsDelivr 的 purge 对同一路径有节流,
+#         清太勤会返回 {"throttled": true} 并直接空转(HTTP 照样 200),
+#         实测窗口大约 8~9 分钟,所以留足余量。清理是否真生效由 purge_cdn.py
+#         比对 md5 来判定,不再信 HTTP 状态码。
 set -u
 
-REFRESH_EVERY=${REFRESH_EVERY:-480}   # 两轮之间睡多久(秒),默认 8 分钟
+REFRESH_EVERY=${REFRESH_EVERY:-480}   # 两轮抓取之间睡多久(秒),默认 8 分钟
+PURGE_EVERY=${PURGE_EVERY:-720}       # 两次清缓存的最小间隔(秒),默认 12 分钟
 RUN_FOR=${RUN_FOR:-6900}              # 这次运行总共持续多久(秒),默认 115 分钟
-REPO=${REPO:-xiaohuya520/csboard}
-CDN="https://cdn.jsdelivr.net/gh/${REPO}@main/cs_matches.json"
-PURGE="https://purge.jsdelivr.net/gh/${REPO}@main/cs_matches.json"
 
 git config user.name  "csboard-bot"
 git config user.email "csboard-bot@users.noreply.github.com"
 
 round=0
+last_purge=0
 end=$(( SECONDS + RUN_FOR ))
 while [ "$SECONDS" -lt "$end" ]; do
   round=$(( round + 1 ))
@@ -34,18 +40,14 @@ while [ "$SECONDS" -lt "$end" ]; do
       # 别的运行可能也在提交,先 rebase 再推
       git pull --rebase --autostash origin main || { git rebase --abort || true; }
       if git push; then
-        # jsDelivr 会按分支缓存文件,不清就一直拿到旧的。
-        # purge 必须走专门的端点(只吃 GET,POST 会 405),而且不是秒生效 ——
-        # 实测等 20 秒去取还是旧版,所以这里最多重试 5 轮、每轮等 25 秒,
-        # 拿本地文件的 md5 跟 CDN 上的比,对上了才算真清干净。
-        want=$(md5sum < cs_matches.json | cut -d' ' -f1)
-        for i in 1 2 3 4 5; do
-          curl -fsS --max-time 30 "$PURGE" > /dev/null 2>&1 || echo "warn: purge 第 $i 次失败"
-          sleep 25
-          got=$(curl -fsS --max-time 25 "$CDN" | md5sum | cut -d' ' -f1 || true)
-          echo "purge try $i: local=$want cdn=$got"
-          if [ "$got" = "$want" ]; then break; fi
-        done
+        now=$(date +%s)
+        if [ $(( now - last_purge )) -ge "$PURGE_EVERY" ]; then
+          # purge_cdn.py 会自己处理节流退避,并按 md5 确认 CDN 真换了新版
+          python3 tools/purge_cdn.py cs_matches.json || echo "warn: 本轮没能把 CDN 清到最新"
+          last_purge=$(date +%s)
+        else
+          echo "距上次清缓存 $(( now - last_purge ))s < ${PURGE_EVERY}s,本轮跳过(避免被节流)"
+        fi
       else
         echo "warn: push 失败,回滚本地改动"
         git reset --hard origin/main || true

@@ -1,4 +1,9 @@
 build/
-build_*/
-.sconsign.dblite
+sdkconfig
+sdkconfig.old
 dependencies.lock
+managed_components/
+.ccache/
+*.bin
+!prebuilt/*.bin
+.DS_Store

@@ -1,0 +1,52 @@
+# --- 目标芯片 ---
+CONFIG_IDF_TARGET="esp32c3"
+# ESP32-C3 无 PSRAM,不开 SPIRAM。
+
+# --- Flash ---
+# FoloToy AI Passport 硬件为 8MB Flash。固定镜像头,便于 idf.py merge-bin。
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_HEADER_FLASHSIZE_UPDATE=n
+
+# --- 分区表 ---
+# 保留受保护的 factory(3MB) 与 cardid(0x356000)。队标与中文字体已改为
+# 编译期编入 app,不再需要 csres 资源分区(见 main/CMakeLists.txt 与 cs_logo_data.c)。
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- 控制台:USB-Serial-JTAG ---
+# 不用 UART0:其默认 TX=GPIO21 与 LCD 背光引脚冲突。
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- LVGL ---
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+# LVGL 自带内存池(独立静态区)。看板对象不多,48KB 留足余量且不易碎片化。
+CONFIG_LV_MEM_SIZE_KILOBYTES=48
+# 中文字体位图 384,181B,glyph 位图偏移会超过 64KB,必须开 32 位索引。
+CONFIG_LV_FONT_FMT_TXT_LARGE=y
+# font_cn16 由 lv_font_conv 以默认压缩(bitmap_format=1)生成;不开启解码开关
+# 汉字会整字不画、只留框架。
+CONFIG_LV_USE_FONT_COMPRESSED=y
+
+# --- HTTPS / 联网数据 ---
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
+# 关键:RTC 上电是 1970 年,mbedTLS 校验证书有效期必然失败(表现为
+# ESP_ERR_HTTP_CONNECT)。固件在首次 HTTPS 前会阻塞等 SNTP 完成,这里把
+# 服务器配足、轮询间隔压到 1 小时保证时钟及时。
+CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000
+
+# --- 配网门户用的内嵌 HTTP 服务器 ---
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+# 门户要接收手机 POST 上来的整份赛事 JSON。
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# --- 系统 ---
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096

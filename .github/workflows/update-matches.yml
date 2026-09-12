@@ -1,0 +1,53 @@
+name: Update matches
+
+# 定时把 Sofascore 的 CS2 赛程/比分抓成 cs_matches.json 提交到 main 分支。
+# 必须放在默认分支上:GitHub 只认默认分支的 schedule。
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-matches
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch and build cs_matches.json
+        run: python3 tools/update_matches.py --out cs_matches.json
+
+      - name: Commit when changed
+        id: commit
+        run: |
+          if git diff --quiet -- cs_matches.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "no change"
+            exit 0
+          fi
+          git config user.name  "csboard-bot"
+          git config user.email "csboard-bot@users.noreply.github.com"
+          git add cs_matches.json
+          git commit -m "data: refresh CS2 matches"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # jsDelivr 会缓存分支内容,更新后必须主动清一次;
+      # 注意 purge 端点只接受 GET(POST 会 405)。
+      - name: Purge jsDelivr cache
+        if: steps.commit.outputs.changed == 'true'
+        run: |
+          for host in cdn fastly gcore testingcf; do
+            curl -fsS --max-time 20 "https://${host}.jsdelivr.net/gh/${{ github.repository }}@main/cs_matches.json" \
+              && echo "purged via ${host}" || echo "purge via ${host} failed (ignored)"
+          done

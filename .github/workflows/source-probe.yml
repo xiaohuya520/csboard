@@ -1,13 +1,11 @@
 name: source-probe
 
-# 临时探测(用完即删)。目标:
-#   1) 在运行器里跑真实数据管道,看 Sofascore 到底通不通
-#   2) 摸清 bo3.gg 的正确查询参数(它带地图名+每图回合分)
-#   3) 试几个绕过 Cloudflare 的办法(HLTV)
+# 临时探测(用完即删)。目标:确认 bo3.gg 是否提供「地图名 + 每图回合分」。
 on:
   push:
     paths:
       - ".github/probe-trigger.txt"
+      - ".github/workflows/source-probe.yml"
 
 permissions:
   contents: read
@@ -15,108 +13,70 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Real pipeline on the runner
+      - name: bo3.gg per-map round scores
         run: |
           set +e
-          echo "=== running tools/update_matches.py for real ==="
-          python3 tools/update_matches.py --out /tmp/m.json
-          echo "exit=$?"
-          if [ -f /tmp/m.json ]; then
-            echo "bytes=$(wc -c < /tmp/m.json)"
-            python3 - <<'PY'
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+          bo3() {
+            curl -s -o /tmp/b -w "%{http_code}" -m 30 -A "$UA" \
+              -H "Origin: https://bo3.gg" -H "Referer: https://bo3.gg/" \
+              -H "Accept: application/json" --compressed "$1"
+          }
+          code=$(bo3 "https://api.bo3.gg/api/v1/matches?page%5Blimit%5D=30&filter%5Bmatches.status%5D%5Beq%5D=finished&sort=-start_date")
+          echo "list http=$code bytes=$(wc -c < /tmp/b)"
+          MID=$(python3 -c "
           import json
-          d = json.load(open("/tmp/m.json", encoding="utf-8"))
-          ms = d.get("matches", [])
-          print("matches=%d live=%d finished=%d upcoming=%d" % (
-              len(ms), sum(1 for m in ms if m["status"]=="live"),
-              sum(1 for m in ms if m["status"]=="finished"),
-              sum(1 for m in ms if m["status"]=="upcoming")))
-          scored = [m for m in ms if any((mp.get("s1") or mp.get("s2")) for mp in m.get("maps", []))]
-          print("matches with a non-zero map score =", len(scored))
-          named = [m for m in ms if any(mp.get("name","").startswith("Map ") is False for mp in m.get("maps", []))]
-          print("matches with a real map name  =", len(named))
-          for m in ms[:3]:
-              print("  ", m["status"], m["team1"]["name"], m["score1"], "-", m["score2"], m["team2"]["name"], "maps=", m.get("maps"))
-          PY
-          fi
+          d=json.load(open('/tmp/b'))
+          for m in d.get('results',[]):
+              if m.get('team1_id') and m.get('team2_id') and m.get('maps_score'):
+                  print(m['id']); break
+          " 2>/dev/null)
+          echo "picked match id=$MID"
+          if [ -z "$MID" ]; then echo "no match id, abort"; exit 0; fi
 
-      - name: bo3.gg parameter sweep
+          for path in \
+            "matches/$MID" \
+            "matches/$MID?include=games" \
+            "matches/$MID?include=games,maps" \
+            "games?filter%5Bmatch_id%5D%5Beq%5D=$MID&page%5Blimit%5D=10" \
+            "matches/$MID/games" ; do
+            echo "----------------------------------------------------------"
+            echo "PATH: $path"
+            code=$(bo3 "https://api.bo3.gg/api/v1/$path")
+            echo "http=$code bytes=$(wc -c < /tmp/b)"
+            head -c 1600 /tmp/b; echo
+          done
+
+          echo "=========================================================="
+          echo "== bo3.gg match page HTML: does it render per-map scores? =="
+          code=$(bo3 "https://bo3.gg/matches/$MID")
+          echo "http=$code bytes=$(wc -c < /tmp/b)"
+          python3 -c "
+          import re
+          t=open('/tmp/b',encoding='utf-8',errors='replace').read()
+          for w in ['Mirage','Inferno','Nuke','Ancient','Anubis','Dust2','Overpass','Train','Vertigo']:
+              n=t.count(w)
+              if n: print('  %-10s hits=%d'%(w,n))
+          m=re.findall(r'\b(1[0-9]|[0-9])\s*[-:]\s*(1[0-9]|[0-9])\b',t)
+          print('  score-like tokens:',len(m),m[:20])
+          " 2>&1 | head -20
+
+      - name: Sofascore with browser UA from runner
         run: |
           set +e
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-          try() {
+          for u in \
+            "https://www.sofascore.com/api/v1/category/1572/scheduled-events/2026-09-12" \
+            "https://api.sofascore.com/api/v1/category/1572/scheduled-events/2026-09-12" ; do
             echo "----------------------------------------------------------"
-            echo "URL: $1"
-            CODE=$(curl -sS -o /tmp/b -w '%{http_code}' -m 25 -A "$UA" \
-              -H "Origin: https://bo3.gg" -H "Referer: https://bo3.gg/" -H "Accept: application/json" "$1" 2>/tmp/e || true)
-            echo "http=$CODE bytes=$(wc -c < /tmp/b)"
-            head -c 700 /tmp/b | tr -d '\r\n'
-            echo
-            [ -s /tmp/e ] && head -c 200 /tmp/e
-          }
-          try "https://api.bo3.gg/api/v1/matches?page%5Blimit%5D=3"
-          try "https://api.bo3.gg/api/v1/matches?page%5Blimit%5D=3&filter%5Bmatches.status%5D%5Beq%5D=finished"
-          try "https://api.bo3.gg/api/v1/matches?page%5Blimit%5D=3&sort=-start_date"
-          try "https://api.bo3.gg/api/v1/matches?page%5Blimit%5D=3&sort%5B0%5D=-start_date"
-          try "https://api.bo3.gg/api/v1/matches/upcoming?page%5Blimit%5D=3"
-          try "https://api.bo3.gg/api/v1/tournaments?page%5Blimit%5D=2"
-
-      - name: Cloudflare bypass attempts for HLTV
-        run: |
-          set +e
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-          show() {
-            echo "----------------------------------------------------------"
-            echo "URL: $1"
-            CODE=$(curl -sSL -o /tmp/h -w '%{http_code}' -m 40 -A "$UA" "$1" 2>/dev/null || true)
-            echo "http=$CODE bytes=$(wc -c < /tmp/h)"
-            echo "mapwords: $(grep -oiE 'mirage|inferno|nuke|ancient|anubis|overpass|vertigo' /tmp/h | sort -u | tr '\n' ' ')"
-            head -c 240 /tmp/h | tr -d '\r\n'
-            echo
-          }
-          show "https://r.jina.ai/https://www.hltv.org/results?offset=0"
-          show "https://r.jina.ai/https://www.hltv.org/matches/2383080/navi-vs-vitality"
-
-      - name: Liquipedia match-level check
-        run: |
-          set +e
-          get() {
-            echo "----------------------------------------------------------"
-            echo "PAGE: $1"
-            curl -sS --compressed -m 30 \
-              -H "User-Agent: csboard-firmware/1.0 (https://github.com/xiaohuya520/csboard; mwyjgl@126.com)" \
-              -H "Accept-Encoding: gzip" \
-              "https://liquipedia.net/counterstrike/api.php?action=parse&page=$2&prop=wikitext&format=json&formatversion=2" \
-              -o /tmp/l
-            echo "bytes=$(wc -c < /tmp/l)"
-            python3 - <<'PY'
-          import json, re
-          try:
-              d = json.load(open("/tmp/l", encoding="utf-8"))
-          except Exception as e:
-              print("parse fail", e); raise SystemExit
-          wt = (d.get("parse") or {}).get("wikitext") or ""
-          print("wikitext len =", len(wt))
-          if not wt:
-              print("keys:", list(d.keys()), str(d)[:200]); raise SystemExit
-          for pat in (r"map1score\s*=", r"\|\s*maps?\s*=", r"\{\{Match", r"16\s*[-:]\s*\d+",
-                      r"Mirage", r"Inferno"):
-              hits = re.findall(pat, wt, re.I)
-              print("   %-16s hits=%d %s" % (pat, len(hits), hits[:3]))
-          i = wt.find("{{Match")
-          if i >= 0:
-              print("   MATCH TEMPLATE:", wt[i:i+400].replace("\n", " | "))
-          PY
-          }
-          get "PGL/2025/Masters" "PGL%2F2025%2FMasters"
-          get "BLAST Bounty 2026" "BLAST%20Bounty%202026"
+            echo "URL: $u"
+            CODE=$(curl -sS -o /tmp/s -w '%{http_code}' -m 30 -A "$UA" \
+              -H "Accept: application/json" -H "Referer: https://www.sofascore.com/" "$u" || true)
+            echo "http=$CODE bytes=$(wc -c < /tmp/s)"
+            head -c 200 /tmp/s; echo
+          done
 
       - name: done
         run: echo "probe finished"

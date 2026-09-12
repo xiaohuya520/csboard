@@ -3,7 +3,9 @@ name: source-probe
 # 临时探测:从 GitHub 运行器的网络里,看哪些 CS2 数据源可达、且带地图名/每图比分。
 # 结论用于决定 update_matches.py 的数据源方向。用完即删。
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - ".github/probe-trigger.txt"
 
 permissions:
   contents: read

@@ -1,0 +1,4 @@
+build/
+build_*/
+.sconsign.dblite
+dependencies.lock

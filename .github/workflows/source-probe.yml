@@ -1,6 +1,6 @@
 name: source-probe
 
-# 临时探测(用完即删)。目标:确认 bo3.gg 是否提供「地图名 + 每图回合分」。
+# 临时探测(用完即删)。确认 bo3.gg games 端点的正确过滤语法。
 on:
   push:
     paths:
@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: bo3.gg per-map round scores
+      - name: bo3.gg games filter syntax
         run: |
           set +e
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -24,59 +24,39 @@ jobs:
               -H "Origin: https://bo3.gg" -H "Referer: https://bo3.gg/" \
               -H "Accept: application/json" --compressed "$1"
           }
-          code=$(bo3 "https://api.bo3.gg/api/v1/matches?page%5Blimit%5D=30&filter%5Bmatches.status%5D%5Beq%5D=finished&sort=-start_date")
-          echo "list http=$code bytes=$(wc -c < /tmp/b)"
+          # A) 最近的 games(带 match_id),看字段
+          echo "=== A) latest games ==="
+          code=$(bo3 "https://api.bo3.gg/api/v1/games?page%5Blimit%5D=5&sort=-begin_at")
+          echo "http=$code bytes=$(wc -c < /tmp/b)"
+          python3 -c "
+          import json
+          d=json.load(open('/tmp/b'))
+          for g in d.get('results',[])[:5]:
+              print('  game id=%s match_id=%s map=%s win=%s(%s) lose=%s(%s) rounds=%s begin=%s' % (
+                g.get('id'), g.get('match_id'), g.get('map_name'),
+                g.get('winner_clan_score'), g.get('winner_clan_name'),
+                g.get('loser_clan_score'), g.get('loser_clan_name'),
+                g.get('rounds_count'), g.get('begin_at')))
+          " 2>&1 | head -20
+
           MID=$(python3 -c "
           import json
           d=json.load(open('/tmp/b'))
-          for m in d.get('results',[]):
-              if m.get('team1_id') and m.get('team2_id') and m.get('maps_score'):
-                  print(m['id']); break
+          for g in d.get('results',[]):
+              if g.get('match_id'): print(g['match_id']); break
           " 2>/dev/null)
-          echo "picked match id=$MID"
-          if [ -z "$MID" ]; then echo "no match id, abort"; exit 0; fi
+          echo "picked match_id=$MID"
 
-          for path in \
-            "matches/$MID" \
-            "matches/$MID?include=games" \
-            "matches/$MID?include=games,maps" \
-            "games?filter%5Bmatch_id%5D%5Beq%5D=$MID&page%5Blimit%5D=10" \
-            "matches/$MID/games" ; do
+          # B) 各种过滤语法
+          for suffix in \
+            "games?filter%5Bgames.match_id%5D%5Beq%5D=$MID&page%5Blimit%5D=5" \
+            "games?filter%5Bmatch_id%5D%5Beq%5D=$MID&page%5Blimit%5D=5" \
+            "games?match_id=$MID&page%5Blimit%5D=5" \
+            "matches?filter%5Bmatches.id%5D%5Beq%5D=$MID" \
+            "matches/$MID?include=games" ; do
             echo "----------------------------------------------------------"
-            echo "PATH: $path"
-            code=$(bo3 "https://api.bo3.gg/api/v1/$path")
+            echo "PATH: $suffix"
+            code=$(bo3 "https://api.bo3.gg/api/v1/$suffix")
             echo "http=$code bytes=$(wc -c < /tmp/b)"
-            head -c 1600 /tmp/b; echo
+            head -c 900 /tmp/b; echo
           done
-
-          echo "=========================================================="
-          echo "== bo3.gg match page HTML: does it render per-map scores? =="
-          code=$(bo3 "https://bo3.gg/matches/$MID")
-          echo "http=$code bytes=$(wc -c < /tmp/b)"
-          python3 -c "
-          import re
-          t=open('/tmp/b',encoding='utf-8',errors='replace').read()
-          for w in ['Mirage','Inferno','Nuke','Ancient','Anubis','Dust2','Overpass','Train','Vertigo']:
-              n=t.count(w)
-              if n: print('  %-10s hits=%d'%(w,n))
-          m=re.findall(r'\b(1[0-9]|[0-9])\s*[-:]\s*(1[0-9]|[0-9])\b',t)
-          print('  score-like tokens:',len(m),m[:20])
-          " 2>&1 | head -20
-
-      - name: Sofascore with browser UA from runner
-        run: |
-          set +e
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-          for u in \
-            "https://www.sofascore.com/api/v1/category/1572/scheduled-events/2026-09-12" \
-            "https://api.sofascore.com/api/v1/category/1572/scheduled-events/2026-09-12" ; do
-            echo "----------------------------------------------------------"
-            echo "URL: $u"
-            CODE=$(curl -sS -o /tmp/s -w '%{http_code}' -m 30 -A "$UA" \
-              -H "Accept: application/json" -H "Referer: https://www.sofascore.com/" "$u" || true)
-            echo "http=$CODE bytes=$(wc -c < /tmp/s)"
-            head -c 200 /tmp/s; echo
-          done
-
-      - name: done
-        run: echo "probe finished"

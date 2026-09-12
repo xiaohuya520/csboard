@@ -64,6 +64,41 @@ def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+def clip_bytes(s: str, budget: int) -> str:
+    """Trim to at most `budget` UTF-8 bytes so the firmware's fixed char arrays
+    never cut a multi-byte sequence in half (which renders as garbage).
+
+    Prefers a word boundary and marks the cut with an ellipsis.
+    """
+    s = (s or "").strip()
+    if len(s.encode("utf-8")) <= budget:
+        return s
+    tail = "…"
+    room = budget - len(tail.encode("utf-8"))
+    out, used = [], 0
+    for ch in s:
+        n = len(ch.encode("utf-8"))
+        if used + n > room:
+            break
+        out.append(ch)
+        used += n
+    cut = "".join(out)
+    sp = cut.rfind(" ")
+    if sp >= max(4, len(cut) // 2):
+        cut = cut[:sp]
+    return cut.rstrip() + tail
+
+
+def strip_prefix(text: str, prefix: str) -> str:
+    """Sofascore 的 tournament 名常是 "<赛事名> Playoffs/Play-In",去掉冗余前缀。"""
+    if not text or not prefix:
+        return text
+    if text.lower().startswith(prefix.lower()):
+        rest = text[len(prefix):].lstrip(" -–—:,·")
+        return rest
+    return text
+
+
 def load_aliases() -> dict[str, str]:
     """normalised name -> logo id, built from the shipped logo list + hand aliases."""
     table: dict[str, str] = {}
@@ -184,8 +219,10 @@ def build_match(event, aliases: dict[str, str]):
     tour = event.get("tournament") or {}
     uni = tour.get("uniqueTournament") or {}
     # 层级:event = 联赛名,stage = 阶段名
-    event_name = (uni.get("name") or tour.get("name") or "CS2")[:22]
-    stage_name = (tour.get("name") or "")[:22]
+    league = uni.get("name") or tour.get("name") or "CS2"
+    # 27 字节 ≈ 240px 屏上整行能放下的拉丁字符数(卡标题行 224px)
+    event_name = clip_bytes(league, 27)
+    stage_name = clip_bytes(strip_prefix(tour.get("name") or "", league), 20)
     if stage_name and norm(stage_name) == norm(event_name):
         stage_name = ""
 
@@ -199,8 +236,8 @@ def build_match(event, aliases: dict[str, str]):
         "date": when.strftime("%m-%d"),
         "time": when.strftime("%H:%M"),
         "bo": "BO%d" % int(event.get("bestOf") or 3),
-        "team1": {"name": home["name"][:18], "logo": t1_id, "color": team_color(t1_id, home["name"])},
-        "team2": {"name": away["name"][:18], "logo": t2_id, "color": team_color(t2_id, away["name"])},
+        "team1": {"name": clip_bytes(home["name"], 18), "logo": t1_id, "color": team_color(t1_id, home["name"])},
+        "team2": {"name": clip_bytes(away["name"], 18), "logo": t2_id, "color": team_color(t2_id, away["name"])},
         "score1": score_of(event, "home"),
         "score2": score_of(event, "away"),
         "maps": maps_of(event, status),

@@ -356,7 +356,7 @@ static void build_hist(lv_obj_t *p)
 
     int base = 4;
     if (s_n_hist > 1) {
-        char h[40];
+        char h[64];
         snprintf(h, sizeof(h), "队伍战绩 %d/%d · OK翻看", s_sel + 1, s_n_hist);
         lv_obj_t *hh = label(p, 6, base, h, &font_cn16, C_GOLD);
         one_line(hh, 228);
@@ -435,7 +435,6 @@ static void build_career(lv_obj_t *p)
         one_line(rl, 148);
     }
 
-    char buf[48];
     int y = 88;
     struct { const char *k; char v[24]; uint32_t c; } rows[] = {
         { "Rating",  "", C_GOLD }, { "K/D",     "", C_INK },

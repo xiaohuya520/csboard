@@ -1,0 +1,24 @@
+{
+  "_note": "NiKo 个人生涯数据的唯一维护入口。改这里即可,update_matches.py 会在每次生成 cs_matches.json 时把下面的字段原样注入为顶层 niko 块,固件(main/cs_data.c 的 cs_niko_t)自动读取。",
+  "_hint": "键名必须与 cs_niko_t 字段一一对应,固件不认的键会被 update_matches.py 丢掉;下划线开头的键只给人看,不发给固件。字符串按固件缓冲裁剪:name 23 / realname 31 / team 19 / logo 23 / color 16 / role 23 / years 15 (UTF-8 字节)。",
+  "_updated": "2026-09-13",
+  "_source": "hand-maintained (HLTV 生涯页口径)",
+
+  "name": "NiKo",
+  "realname": "Nikola Kovač",
+  "team": "Falcons",
+  "logo": "falcons",
+  "color": "#00B36B",
+  "role": "步枪手 / 指挥",
+  "rating": 1.12,
+  "kd": 1.08,
+  "adr": 78.5,
+  "kast": 74.3,
+  "impact": 1.05,
+  "maps": 1480,
+  "majors": 0,
+  "mvp": 21,
+  "earnings": 190,
+  "years": "2009-至今",
+  "age": 29
+}

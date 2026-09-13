@@ -32,6 +32,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -304,6 +305,57 @@ def fetch_status(status: str, sort: str, limit: int) -> list[dict]:
     return rows
 
 
+def resolve_falcons_id() -> str | None:
+    """从 bo3.gg 解析法尔孔(Falcons)的战队 id。
+
+    名字可能是 'Falcons' / 'Team Falcons' / 'Falcons Esports',逐一试。
+    拿不到就返回 None —— 这时主流程会退回到『按队名本地过滤』,照样能只留法尔孔。
+    """
+    for name in ("Falcons", "Team Falcons", "Falcons Esports"):
+        d = api_soft("teams?filter%%5Bteams.name%%5D%%5Beq%%5D=%s&page%%5Blimit%%5D=5"
+                     % urllib.parse.quote(name))
+        if not d:
+            continue
+        for r in (d.get("results") or []):
+            if r.get("id") and "falcons" in norm(r.get("name", "")):
+                print("  resolved Falcons id = %s (%s)" % (r["id"], r.get("name")))
+                return str(r["id"])
+    print("  warn: cannot resolve Falcons id; will filter by name locally")
+    return None
+
+
+def fetch_falcons(status: str, sort: str, limit: int, fid: str | None) -> list[dict]:
+    """抓法尔孔的比赛。
+
+    优先按 team1_id / team2_id 过滤(bo3 若支持就精准);若 bo3 静默忽略队伍过滤
+    (它一贯这么干),就回退到全局抓取 + 主流程里按 id/队名本地过滤。两种路径最终
+    都由主流程再筛一遍,保证只留下法尔孔的场次。
+    """
+    rows: list[dict] = []
+    if fid:
+        for side in ("team1_id", "team2_id"):
+            d = api_soft("matches?filter%%5Bmatches.status%%5D%%5Beq%%5D=%s"
+                         "&filter%%5Bmatches.%s%%5D%%5Beq%%5D=%s&sort=%s&page%%5Blimit%%5D=%d"
+                         % (status, side, fid, sort, limit))
+            if d:
+                rows += (d.get("results") or [])
+    if not rows:
+        d = api_soft("matches?filter%%5Bmatches.status%%5D%%5Beq%%5D=%s&sort=%s&page%%5Blimit%%5D=%d"
+                     % (status, sort, limit))
+        rows = (d or {}).get("results") or []
+    print("  status=%-9s raw %d rows (fid=%s)" % (status, len(rows), fid))
+    return rows
+
+
+def is_falcons(m: dict, fid: str | None, cache: NameCache) -> bool:
+    """这条比赛是否涉及法尔孔(按 id 或解析后的队名判断)。"""
+    if fid and (str(m.get("team1_id")) == str(fid) or str(m.get("team2_id")) == str(fid)):
+        return True
+    n1 = norm(cache.team(m.get("team1_id")))
+    n2 = norm(cache.team(m.get("team2_id")))
+    return "falcons" in n1 or "falcons" in n2
+
+
 def parse_when(s: str):
     if not s:
         return None
@@ -352,7 +404,7 @@ def build_maps(match: dict, games: list[dict], max_maps: int) -> list[dict]:
     return out
 
 
-def build_match(m: dict, aliases: dict[str, str], cache: NameCache):
+def build_match(m: dict, aliases: dict[str, str], cache: NameCache, fid: str | None):
     status = {"current": "live", "finished": "finished"}.get(m.get("status"), "upcoming")
     t1_id, t2_id = m.get("team1_id"), m.get("team2_id")
     if not t1_id or not t2_id:
@@ -369,6 +421,18 @@ def build_match(m: dict, aliases: dict[str, str], cache: NameCache):
 
     logo1 = aliases.get(norm(n1), "")
     logo2 = aliases.get(norm(n2), "")
+
+    # 把法尔孔一侧的队名/队标强制归一为 "Falcons"/"falcons",
+    # 这样固件的关注队(="Falcons")一定能匹配上(否则 bo3 的 "Team Falcons" 会对不上)。
+    if fid and str(t1_id) == str(fid):
+        n1, logo1 = "Falcons", "falcons"
+    elif fid and str(t2_id) == str(fid):
+        n2, logo2 = "Falcons", "falcons"
+    else:
+        if "falcons" in norm(n1):
+            n1, logo1 = "Falcons", "falcons"
+        elif "falcons" in norm(n2):
+            n2, logo2 = "Falcons", "falcons"
 
     # 预告也查:bo3 会把已选好的地图列出来,卡片上能显示图池。
     d = api_soft("games?filter%%5Bgames.match_id%%5D%%5Beq%%5D=%s&page%%5Blimit%%5D=5"
@@ -464,8 +528,8 @@ def encode(data: dict) -> bytes:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "cs_matches.json"))
-    ap.add_argument("--days-back", type=int, default=3)
-    ap.add_argument("--days-fwd", type=int, default=7)
+    ap.add_argument("--days-back", type=int, default=21)
+    ap.add_argument("--days-fwd", type=int, default=14)
     ap.add_argument("--no-niko", action="store_true",
                     help="不注入 niko 生涯块(排查用;固件会退回内置示例)")
     args = ap.parse_args()
@@ -483,10 +547,12 @@ def main() -> int:
     print("bo3.gg pipeline: window %s .. %s" % (lo.strftime("%m-%d %H:%M"),
                                                 hi.strftime("%m-%d %H:%M")))
 
+    # 法尔孔专属:先解析法尔孔战队 id,再只抓它的比赛(实时/预告/已结束)。
+    fid = resolve_falcons_id()
     raw = []
-    raw += fetch_status("current", "start_date", 50)
-    raw += fetch_status("upcoming", "start_date", 100)
-    raw += fetch_status("finished", "-start_date", 100)
+    raw += fetch_falcons("current", "start_date", 50, fid)
+    raw += fetch_falcons("upcoming", "start_date", 100, fid)
+    raw += fetch_falcons("finished", "-start_date", 100, fid)
 
     # 日期过滤只能在本地做(bo3 会静默忽略日期条件)。
     seen, rows = set(), []
@@ -506,10 +572,21 @@ def main() -> int:
     cache.teams_of([m.get("team1_id") for m in rows] + [m.get("team2_id") for m in rows])
     cache.tours_of([m.get("tournament_id") for m in rows])
 
+    # 法尔孔专属:只保留涉及法尔孔的场次(fid 命中 或 队名归一后命中)。
+    # fetch_falcons 在 bo3 支持队伍过滤时已经精准;不支持时回退全局抓取,
+    # 这里再卡一道,确保无论如何只留下法尔孔的比赛(用户要的就是它)。
+    falcons = [m for m in rows if is_falcons(m, fid, cache)]
+    print("falcons-only %d / raw %d" % (len(falcons), len(rows)))
+    rows = falcons
+    if not rows:
+        print("ERROR: no Falcons matches in window; refusing to publish empty data",
+              file=sys.stderr)
+        return 1
+
     parsed = []
     for m in rows:
         try:
-            built = build_match(m, aliases, cache)
+            built = build_match(m, aliases, cache, fid)
         except RuntimeError as exc:
             print("warn: skip match %s (%s)" % (m.get("id"), exc), file=sys.stderr)
             continue
@@ -517,10 +594,9 @@ def main() -> int:
             parsed.append(built)
     print("parsed %d matches" % len(parsed))
 
-    # 上榜条件:赛事级别够高,或者至少有一支队伍有队标可显示。
-    notable = [m for m in parsed if m["_tier"] <= MAX_TIER_RANK or m["_logo"]]
-    if len(notable) < 6:
-        notable = parsed
+    # 不再按全局『赛事级别/队标』筛选:法尔孔的比赛全部保留
+    # (用户要的就是法尔孔近期战绩 + 未来预告 + 当前实时比分)。
+    notable = parsed
     print("notable %d / parsed %d" % (len(notable), len(parsed)))
 
     buckets: dict[str, list] = {"live": [], "finished": [], "upcoming": []}

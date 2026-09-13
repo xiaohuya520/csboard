@@ -48,6 +48,10 @@ static const char *TAG = "cs_niko";
 #define HINT_H   22
 #define CONT_H   (SCR_H - BAR_H - HINT_H)
 
+// 三键共用的 ADC 引脚 = GPIO0(见 components/bsp/include/bsp_pins.h
+// 的 BSP_BTN_ADC_CHANNEL=ADC_CHANNEL_0)。深度睡眠靠它唤醒。
+#define NK_BTN_GPIO  0
+
 // ---------------------------------------------------------------------------
 // 视图
 // ---------------------------------------------------------------------------
@@ -630,9 +634,23 @@ static void on_tick(lv_timer_t *t)
     if (s_portal_on || s_n_live > 0) {
         bsp_display_backlight(100);
     } else if (idle > 600000) {
-        ESP_LOGI(TAG, "空闲 10 分钟,进入深度睡眠(定时+按键唤醒)");
-        esp_sleep_enable_timer_wakeup(300000000);   // 5 分钟后自动醒来刷新
-        esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0); // 按键唤醒(开发板 BOOT 键)
+        ESP_LOGI(TAG, "空闲 10 分钟,进入深度睡眠(定时 + 按键唤醒)");
+        // 定时 5 分钟自动醒来刷一次比分,不必等用户按键。
+        esp_sleep_enable_timer_wakeup(300ULL * 1000000ULL);
+        // 三键共用 GPIO0(ADC 分压):松开被上拉到 3.3V=高,任一键按下即被拉低。
+        // 用 gpio_config 显式设为输入,避免唤醒前引脚悬空。
+        gpio_config_t gc = {
+            .pin_bit_mask = (1ULL << NK_BTN_GPIO),
+            .mode         = GPIO_MODE_INPUT,
+            .pull_up_en   = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type    = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&gc);
+        // ESP32-C3 无 EXT0/EXT1(SOC_PM_SUPPORT_EXT0_WAKEUP=0),只能走
+        // SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP 的 GPIO 唤醒;C3 仅支持 GPIO0~GPIO5。
+        esp_deep_sleep_enable_gpio_wakeup((uint64_t)1 << NK_BTN_GPIO,
+                                          ESP_GPIO_WAKEUP_GPIO_LOW);
         esp_deep_sleep_start();
     } else if (idle > 60000) {
         bsp_display_backlight(8);

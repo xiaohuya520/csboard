@@ -6,3 +6,5 @@ cardid,   data, nvs,     0x356000, 0x4000,
 # cardid 之后到 8MB 还有约 4.6MB 空闲。这里划 64KB 专门放赛事 JSON 缓存,
 # 不再和 24KB 的默认 nvs(Wi-Fi 凭证)抢空间。
 csdata,   data, nvs,     0x35A000, 0x10000,
+# 200 队队标资源包(扩展包由 CI 从 bo3.gg 抓取生成后烧入;空分区=只用内嵌 105 队)。
+csres,    data, 0x40,    0x36A000, 0x400000,

@@ -71,6 +71,32 @@ typedef struct {
     cs_match_t m[CS_MAX_MATCHES];
 } cs_data_t;
 
+// ---------------- NiKo 个人生涯数据(看板衍生字段) ----------------
+#define CS_NIKO_NAME_LEN   24
+#define CS_NIKO_REAL_LEN   32
+#define CS_NIKO_ROLE_LEN   24
+#define CS_NIKO_YEARS_LEN  16
+
+typedef struct {
+    char     name[CS_NIKO_NAME_LEN];    // 选手名 NiKo
+    char     realname[CS_NIKO_REAL_LEN];// 真名 Nikola Kovač
+    char     team[CS_TEAM_LEN];         // 所属战队 Falcons
+    char     team_logo[CS_LOGO_LEN];    // 战队队标 id falcons
+    uint32_t team_color;                // 战队主色
+    char     role[CS_NIKO_ROLE_LEN];    // 位置/角色
+    float    rating;                    // Rating 2.0
+    float    kd;                        // K/D
+    float    adr;                       // 场均伤害
+    float    kast;                      // KAST%
+    float    impact;                    // Impact
+    int      maps;                      // 出场地图数
+    int      majors;                    // 大赛冠军数
+    int      mvp;                       // MVP 次数
+    int      earnings;                  // 总奖金(万美元)
+    char     years[CS_NIKO_YEARS_LEN];  // 职业生涯 2009-至今
+    int      age;                       // 年龄
+} cs_niko_t;
+
 // ---------------- 拉取状态(UI 轮询) ----------------
 typedef enum {
     CS_FETCH_IDLE = 0,
@@ -84,6 +110,11 @@ const cs_data_t *cs_data(void);
 bool             cs_data_is_from_net(void);
 const char      *cs_data_source(void);
 uint32_t         cs_data_rev(void);        // 每次成功更新 +1,UI 用来判断是否需要重绘
+
+// ---------------- NiKo 衍生数据 ----------------
+const cs_niko_t *cs_niko(void);            // 当前选手生涯数据(可能为空)
+const char      *cs_follow_team(void);     // 返回 niko.team,空串表示未知
+void             cs_niko_use_builtin(void);// 回到内置示例选手数据
 
 // 按状态筛选:把 cs_data() 中 status == st 的下标写进 idx_out(最多 max 个),返回个数。
 // st 传 NULL 表示不过滤。

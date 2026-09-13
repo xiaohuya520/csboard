@@ -9,7 +9,7 @@ headers as update_matches.py), downloads each team's real logo, resizes it to
 
 header (little-endian u32): [0]"CSRP" [1]version=1 [2]slot_count [3]alias_count
     [4]alias_off [5]pix48_off [6]pix20_off [7]crc32(body) [8]total_size
-alias entry: char id[24] | u16 slot | u16 rsvd | u32 color | u32 rsvd
+alias entry: char id[24] | u16 slot | u16 rsvd | u32 color
 
 Designed to run in GitHub Actions (the build runner can reach bo3.gg; local
 networks often cannot). NEVER fails the build: any problem just prints a
@@ -22,7 +22,6 @@ import gzip
 import io
 import json
 import os
-import re
 import struct
 import sys
 import urllib.error
@@ -45,13 +44,12 @@ IMG_HDRS = {
     "Accept": "image/avif,image/webp,image/png,image/*,*/*;q=0.8",
 }
 
-# 排名接口无法在本地验证(本地出口到 bo3.gg 被挡),按 filter 语法排好候选
-# 逐个试;返回条目最多的那个赢。filter 语法与 update_matches.py 一致。
+# 排名接口按 filter 语法排好候选逐个试(CI 实测:第一个可用,单页上限 100,
+# 翻页拿满 200;返回条目最多的候选赢)。
 TEAM_ENDPOINTS = (
-    "teams?sort=-rating&page%5Blimit%5D=250&page%5Bnumber%5D=1",
-    "teams?filter%5Bteams.game_id%5D%5Beq%5D=1&sort=-rating"
-    "&page%5Blimit%5D=250&page%5Bnumber%5D=1",
-    "teams?page%5Blimit%5D=250&page%5Bnumber%5D=1",
+    "teams?page%5Blimit%5D=100",
+    "teams?page%5Blimit%5D=100&sort=-rating",
+    "teams?filter%5Bteams.game_id%5D%5Beq%5D=1&sort=-rating&page%5Blimit%5D=100",
 )
 
 
@@ -149,16 +147,25 @@ def image_to_rgb565(png: bytes, edge: int):
 def main() -> int:
     teams = []
     for ep in TEAM_ENDPOINTS:
-        d = as_list(fetch_json(ep))
-        print("endpoint %s -> %d rows" % (ep.split('?')[0], len(d)))
-        if len(d) > len(teams):
-            teams = d
+        acc = []
+        for page in (1, 2, 3):
+            d = as_list(fetch_json(f"{ep}&page%5Bnumber%5D={page}"))
+            if not d:
+                break
+            acc += d
+            if len(d) < 100:          # 不足一页 = 到底了
+                break
+        print("endpoint %s -> %d rows" % (ep.split('?')[0], len(acc)))
+        if len(acc) > len(teams):
+            teams = acc
+        if len(teams) >= TARGET_TEAMS:
+            break
     if not teams:
         print("no team ranking available; shipping without pack")
         return 0
 
     embedded = load_embedded_ids()
-    slots: list[dict] = []          # {"aliases": set, "color": u32, "png": bytes}
+    slots: list[dict] = []          # {"aliases": [...], "color": u32, "png": bytes}
     seen: set[str] = set()
 
     for t in teams:
@@ -187,8 +194,7 @@ def main() -> int:
         if not png:
             continue
         # 校验确实是可解码图片(有些 CDN 404 也返回 200 + HTML)
-        probe = image_to_rgb565(png, 8)
-        if probe is None:
+        if image_to_rgb565(png, 8) is None:
             continue
 
         color_hex = COLORS.get(key, "") or COLORS.get(norm(name), "")
@@ -228,18 +234,10 @@ def main() -> int:
         body += struct.pack("<HHI", slot, 0, color)
     assert len(body) == p48_off - 64
 
-    try:
-        from PIL import Image  # noqa: F401  (已在探测阶段确认可用)
-    except ImportError:
-        print("Pillow missing; shipping without pack")
-        return 0
-
     for s in slots:
         body += image_to_rgb565(s["png"], 48)
     for s in slots:
-        # 20px 从 48px 重采样:比直接从原图缩更锐
-        im = Image.open(_io.BytesIO(s["png"])).convert("RGBA")
-        body += image_to_rgb565(im.tobytes(), 20)
+        body += image_to_rgb565(s["png"], 20)
 
     hdr = struct.pack("<4s8I", b"CSRP", 1, n, alias_n,
                       alias_off, p48_off, p20_off,

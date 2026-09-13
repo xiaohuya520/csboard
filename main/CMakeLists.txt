@@ -6,6 +6,8 @@ idf_component_register(
          "cs_portal.c"
          "cs_niko.c"
          "cs_avatar.c"
+         "cs_avatar_data.c"
+         "cs_qr_data.c"
          "cs_logos.c"
          "cs_logo_data.c"
          "cs_font_cn16.c"

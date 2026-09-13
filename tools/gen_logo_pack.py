@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate the CSR3 logo resource pack for the "csres" flash partition.
 
-Fetches the CS2 world team ranking from bo3.gg's public API (same host and
-headers as update_matches.py), downloads each team's real logo, resizes it to
-48x48 and 20x20 RGB565 and packs up to 200 teams:
+Fetches the CS2 team list from bo3.gg's public API (same host and headers as
+update_matches.py), downloads each team's real logo, resizes it to 48x48 and
+20x20 RGB565 and packs up to 200 teams:
 
     64B header | alias table (32B each) | 48px block | 20px block
 
@@ -24,6 +24,7 @@ import json
 import os
 import struct
 import sys
+import time
 import urllib.error
 import urllib.request
 import zlib
@@ -44,46 +45,14 @@ IMG_HDRS = {
     "Accept": "image/avif,image/webp,image/png,image/*,*/*;q=0.8",
 }
 
-# 排名接口候选,逐个试(CI 实测:page[limit]=100 可用,但 page[number] 翻页
-# 疑似被忽略 —— 3 页返回同一批;所以翻页时按"新增行数"判停,并尽量带上
-# 排序参数,哪个候选既可用又有新数据就用哪个)。
+# 端点候选:CI 实测无 sort 的 teams?page[limit]=100 可用且 page[number] 翻页
+# 有效;带 sort=-rating 会 422。排序参数能成就成,不成就按默认序全量抓
+# (固件按队名查表,抓全量比抓排序更利于覆盖前 200)。
 TEAM_ENDPOINTS = (
     "teams?page%5Blimit%5D=100&sort=-rating",
     "teams?page%5Blimit%5D=100&sort=-teams.rating",
     "teams?page%5Blimit%5D=100",
 )
-
-
-def fetch_teams():
-    """翻页抓队伍,按新增行数判停;返回(行数最多的候选, 是否带排序)。"""
-    best, best_sorted = [], False
-    for si, ep in enumerate(TEAM_ENDPOINTS):
-        acc, seen = [], set()
-        for page in (1, 2, 3, 4, 5, 6):
-            d = as_list(fetch_json(f"{ep}&page%5Bnumber%5D={page}"))
-            if not d:
-                break
-            fresh = 0
-            for t in d:
-                k = None
-                if isinstance(t, dict):
-                    k = t.get("id") or norm(t.get("slug") or t.get("name") or "")
-                if k and k in seen:
-                    continue
-                if k:
-                    seen.add(k)
-                acc.append(t)
-                fresh += 1
-            print("endpoint#%d page%d -> %d rows (%d new)"
-                  % (si + 1, page, len(d), fresh))
-            if fresh == 0:
-                break
-        print("endpoint#%d total unique rows: %d" % (si + 1, len(acc)))
-        if len(acc) > len(best):
-            best, best_sorted = acc, si < 2
-        if len(best) >= TARGET_TEAMS + 100:
-            break
-    return best, best_sorted
 
 
 def fetch(url: str, hdrs: dict, timeout: int = 30) -> bytes | None:
@@ -124,17 +93,42 @@ def as_list(d):
     return []
 
 
-def pick(d: dict, keys: tuple, *path):
-    """按候选键取第一个非空值;支持一层嵌套(如 team.logo_url)。"""
-    for k in keys:
-        if isinstance(d, dict) and d.get(k):
-            return d[k]
-    for p in path:
-        sub = d.get(p) if isinstance(d, dict) else None
-        if isinstance(sub, dict):
-            for k in keys:
-                if sub.get(k):
-                    return sub[k]
+URL_KEYS = ("logo_url", "image_url", "logo", "image", "logo_url_dark",
+            "image_url_dark", "icon", "avatar")
+
+
+def extract_url(t: dict) -> str | None:
+    """尽量把队标 URL 从各种可能的形态里挖出来(顶层/一层嵌套/dict.url)。"""
+    def probe(v):
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, dict):                      # image: {url: ...}
+            for k in ("url", "original", "default", "src"):
+                s = v.get(k)
+                if isinstance(s, str) and s.strip():
+                    return s.strip()
+        return None
+    for k in URL_KEYS:
+        u = probe(t.get(k))
+        if u:
+            return u
+    for sub in ("team", "attributes", "relations", "media"):
+        s = t.get(sub)
+        if isinstance(s, dict):
+            for k in URL_KEYS:
+                u = probe(s.get(k))
+                if u:
+                    return u
+    return None
+
+
+def absolutize(url: str) -> str | None:
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        return "https://bo3.gg" + url
+    if url.startswith("http"):
+        return url
     return None
 
 
@@ -177,58 +171,78 @@ def image_to_rgb565(png: bytes, edge: int):
         return None
 
 
-def main() -> int:
-    teams = []
-    for ep in TEAM_ENDPOINTS:
-        acc = []
-        for page in (1, 2, 3):
+def fetch_teams():
+    """翻页抓队伍,按新增行数判停;返回行数最多的候选。"""
+    best = []
+    for si, ep in enumerate(TEAM_ENDPOINTS):
+        acc, seen = [], set()
+        for page in (1, 2, 3, 4, 5, 6):
             d = as_list(fetch_json(f"{ep}&page%5Bnumber%5D={page}"))
             if not d:
                 break
-            acc += d
-            if len(d) < 100:          # 不足一页 = 到底了
+            fresh = 0
+            for t in d:
+                k = None
+                if isinstance(t, dict):
+                    k = t.get("id") or norm(t.get("slug") or t.get("name") or "")
+                if k and k in seen:
+                    continue
+                if k:
+                    seen.add(k)
+                acc.append(t)
+                fresh += 1
+            print("endpoint#%d page%d -> %d rows (%d new)" % (si + 1, page, len(d), fresh))
+            if fresh == 0:
                 break
-        print("endpoint %s -> %d rows" % (ep.split('?')[0], len(acc)))
-        if len(acc) > len(teams):
-            teams = acc
-        if len(teams) >= TARGET_TEAMS:
+        print("endpoint#%d total unique rows: %d" % (si + 1, len(acc)))
+        if len(acc) > len(best):
+            best = acc
+        if len(best) >= TARGET_TEAMS + 150:
             break
+    return best
+
+
+def main() -> int:
+    teams = fetch_teams()
     if not teams:
         print("no team ranking available; shipping without pack")
         return 0
 
     embedded = load_embedded_ids()
-    slots: list[dict] = []          # {"aliases": [...], "color": u32, "png": bytes}
+    slots: list[dict] = []
     seen: set[str] = set()
+    n_nourl = n_fetchfail = n_badimg = 0
 
     for t in teams:
         if len(slots) >= TARGET_TEAMS:
             break
         if not isinstance(t, dict):
             continue
-        name = pick(t, ("name", "title", "nickname")) or ""
-        slug = pick(t, ("slug", "short_name", "abbreviation")) or ""
+        name = (t.get("name") or t.get("title") or t.get("nickname") or "")
+        slug = (t.get("slug") or t.get("short_name") or t.get("abbreviation") or "")
         key = norm(slug) or norm(name)
         if not key or key in seen:
             continue
-        url = pick(t, ("logo_url", "image_url", "logo", "image",
-                       "logo_url_dark", "image_url_dark", "icon"),
-                   "team", "attributes")
+        url = extract_url(t)
         if not url:
+            n_nourl += 1
             continue
-        url = str(url)
-        if url.startswith("//"):
-            url = "https:" + url
-        elif url.startswith("/"):
-            url = "https://bo3.gg" + url
-        elif not url.startswith("http"):
+        url = absolutize(url)
+        if not url:
+            n_nourl += 1
             continue
+
         png = fetch(url, IMG_HDRS, timeout=25)
+        if not png:                       # 限流重试一次
+            time.sleep(1.5)
+            png = fetch(url, IMG_HDRS, timeout=25)
         if not png:
+            n_fetchfail += 1
             continue
-        # 校验确实是可解码图片(有些 CDN 404 也返回 200 + HTML)
         if image_to_rgb565(png, 8) is None:
+            n_badimg += 1
             continue
+        time.sleep(0.15)                  # 温和一点,别把 CDN 惹毛
 
         color_hex = COLORS.get(key, "") or COLORS.get(norm(name), "")
         if color_hex:
@@ -244,6 +258,8 @@ def main() -> int:
         slots.append({"aliases": sorted(aliases), "color": color, "png": png})
         print("  [%3d] %-22s %s" % (len(slots), name[:22], url[:60]))
 
+    print("team scan done: %d slots, no-url=%d fetch-fail=%d bad-img=%d"
+          % (len(slots), n_nourl, n_fetchfail, n_badimg))
     if not slots:
         print("no downloadable logos; shipping without pack")
         return 0

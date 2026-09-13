@@ -104,7 +104,7 @@ def fetch_teams():
 
 def _absorb_probe(acc, seen, rows):
     """探测性吸收:复制 seen 试加,有新行才真正落账(避免翻页风格污染数据)。"""
-    trial = dict(seen)
+    trial = set(seen)
     add = []
     for t in rows:
         k = None
@@ -113,7 +113,7 @@ def _absorb_probe(acc, seen, rows):
         if k and k in trial:
             continue
         if k:
-            trial[k] = True
+            trial.add(k)
         add.append(t)
     if not add:
         return False

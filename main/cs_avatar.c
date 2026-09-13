@@ -1,71 +1,71 @@
-// cs_avatar.c —— NiKo 头像(程序化绘制)
+// cs_avatar.c —— NiKo 头像:把生成好的 104/52 两档 RGB565 位图包成 LVGL 描述符。
 //
-// 设计取舍:真实选手照片需要二进制图片资源(几十 KB 的 RGB565 数组),会增大固件
-// 且涉及版权。看板面向粉丝,用「战队色圆环 + 准星 + 选手名」的程序化徽章更稳妥:
-// 零资源、必然可编译、必然可显示,且一眼能认出是「NiKo 的看板」。
-// 需要真实照片时,按 cs_avatar.h 顶部说明替换即可。
+// 为什么改成真图:程序化画的「战队色圆环 + 准星」虽然必编译必显示,但一眼看不出是谁。
+// 现在的位图是静态资源(约 27KB),编进 app 里,不依赖任何运行期解码器,
+// 也不占堆内存 —— 只在需要时给 LVGL 一个描述符。
 #include "cs_avatar.h"
 #include "cs_data.h"
-#include "cs_fonts.h"
 
-#include "lvgl.h"
 #include <string.h>
 
-// 取一个尺寸内的居中矩形(去掉滚动标志),统一封装避免重复
-static lv_obj_t *box(lv_obj_t *parent, int x, int y, int w, int h,
-                     uint32_t bg, uint32_t border)
+extern const uint16_t cs_avatar104[104 * 104];
+extern const uint16_t cs_avatar52[52 * 52];
+
+static lv_image_dsc_t s_d104;
+static lv_image_dsc_t s_d52;
+static bool           s_ready;
+
+static void make_dsc(lv_image_dsc_t *dsc, const uint16_t *pix, int edge)
 {
-    lv_obj_t *o = lv_obj_create(parent);
-    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(o, x, y);
-    lv_obj_set_size(o, w, h);
-    lv_obj_set_style_radius(o, w / 2, 0);
-    lv_obj_set_style_bg_color(o, lv_color_hex(bg), 0);
-    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(o, border ? 2 : 0, 0);
-    lv_obj_set_style_border_color(o, lv_color_hex(border ? border : bg), 0);
-    lv_obj_set_style_pad_all(o, 0, 0);
-    return o;
+    memset(dsc, 0, sizeof(*dsc));
+    dsc->header.magic  = LV_IMAGE_HEADER_MAGIC;
+    dsc->header.cf     = LV_COLOR_FORMAT_RGB565;
+    dsc->header.w      = (uint32_t)edge;
+    dsc->header.h      = (uint32_t)edge;
+    dsc->header.stride = (uint32_t)edge * 2u;
+    dsc->data_size     = (uint32_t)edge * edge * 2u;
+    dsc->data          = (const uint8_t *)pix;
+}
+
+static bool ensure(void)
+{
+    if (s_ready) return true;
+    make_dsc(&s_d104, cs_avatar104, 104);
+    make_dsc(&s_d52,  cs_avatar52,  52);
+    s_ready = true;
+    return true;
+}
+
+const lv_image_dsc_t *cs_avatar_image(int size)
+{
+    ensure();
+    return (size <= 72) ? &s_d52 : &s_d104;
 }
 
 void cs_avatar_draw(lv_obj_t *parent, int x, int y, int size)
 {
+    if (!parent || size <= 0) return;
+    ensure();
+
     const cs_niko_t *n = cs_niko();
-    uint32_t ring = (n && n->team_color) ? n->team_color : 0xE43B2F;
+    uint32_t ring = (n && n->team_color) ? n->team_color : 0x00B36B;
+    int native = (size <= 72) ? 52 : 104;
 
-    // 外环(战队色)
-    lv_obj_t *o = box(parent, x, y, size, size, ring, 0);
+    // 外框:战队色描边 + 深色底,把头像框成一张「选手牌」
+    lv_obj_t *f = lv_obj_create(parent);
+    lv_obj_remove_flag(f, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(f, x, y);
+    lv_obj_set_size(f, size, size);
+    lv_obj_set_style_radius(f, size / 6, 0);
+    lv_obj_set_style_bg_color(f, lv_color_hex(0x0B0E13), 0);
+    lv_obj_set_style_bg_opa(f, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(f, 2, 0);
+    lv_obj_set_style_border_color(f, lv_color_hex(ring), 0);
+    lv_obj_set_style_pad_all(f, 0, 0);
+    lv_obj_set_style_clip_corner(f, true, 0);
 
-    // 内圆(深色底)
-    int in = size * 74 / 100;
-    lv_obj_t *inner = box(o, (size - in) / 2, (size - in) / 2, in, in, 0x0E1116, 0);
-
-    // 准星:横 + 竖 两条细线(电竞风)
-    int cl = in * 46 / 100;
-    lv_obj_t *h = lv_obj_create(inner);
-    lv_obj_remove_flag(h, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(h, (in - cl) / 2, in / 2 - 1);
-    lv_obj_set_size(h, cl, 2);
-    lv_obj_set_style_bg_color(h, lv_color_hex(0xE6EDF3), 0);
-    lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(h, 0, 0);
-    lv_obj_set_style_pad_all(h, 0, 0);
-
-    lv_obj_t *v = lv_obj_create(inner);
-    lv_obj_remove_flag(v, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(v, in / 2 - 1, (in - cl) / 2);
-    lv_obj_set_size(v, 2, cl);
-    lv_obj_set_style_bg_color(v, lv_color_hex(0xE6EDF3), 0);
-    lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(v, 0, 0);
-    lv_obj_set_style_pad_all(v, 0, 0);
-
-    // 选手名
-    lv_obj_t *nm = lv_label_create(inner);
-    lv_obj_set_style_text_font(nm, &font_cn16, 0);
-    lv_obj_set_style_text_color(nm, lv_color_hex(0xE6EDF3), 0);
-    lv_label_set_text(nm, (n && n->name[0]) ? n->name : "NiKo");
-    lv_obj_set_width(nm, in);
-    lv_obj_set_style_text_align(nm, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(nm, LV_ALIGN_CENTER, 0, in * 20 / 100);
+    lv_obj_t *im = lv_image_create(f);
+    lv_image_set_src(im, cs_avatar_image(size));
+    lv_image_set_scale(im, (uint32_t)(256 * size / native));
+    lv_obj_center(im);
 }

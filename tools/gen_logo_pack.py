@@ -44,13 +44,46 @@ IMG_HDRS = {
     "Accept": "image/avif,image/webp,image/png,image/*,*/*;q=0.8",
 }
 
-# 排名接口按 filter 语法排好候选逐个试(CI 实测:第一个可用,单页上限 100,
-# 翻页拿满 200;返回条目最多的候选赢)。
+# 排名接口候选,逐个试(CI 实测:page[limit]=100 可用,但 page[number] 翻页
+# 疑似被忽略 —— 3 页返回同一批;所以翻页时按"新增行数"判停,并尽量带上
+# 排序参数,哪个候选既可用又有新数据就用哪个)。
 TEAM_ENDPOINTS = (
-    "teams?page%5Blimit%5D=100",
     "teams?page%5Blimit%5D=100&sort=-rating",
-    "teams?filter%5Bteams.game_id%5D%5Beq%5D=1&sort=-rating&page%5Blimit%5D=100",
+    "teams?page%5Blimit%5D=100&sort=-teams.rating",
+    "teams?page%5Blimit%5D=100",
 )
+
+
+def fetch_teams():
+    """翻页抓队伍,按新增行数判停;返回(行数最多的候选, 是否带排序)。"""
+    best, best_sorted = [], False
+    for si, ep in enumerate(TEAM_ENDPOINTS):
+        acc, seen = [], set()
+        for page in (1, 2, 3, 4, 5, 6):
+            d = as_list(fetch_json(f"{ep}&page%5Bnumber%5D={page}"))
+            if not d:
+                break
+            fresh = 0
+            for t in d:
+                k = None
+                if isinstance(t, dict):
+                    k = t.get("id") or norm(t.get("slug") or t.get("name") or "")
+                if k and k in seen:
+                    continue
+                if k:
+                    seen.add(k)
+                acc.append(t)
+                fresh += 1
+            print("endpoint#%d page%d -> %d rows (%d new)"
+                  % (si + 1, page, len(d), fresh))
+            if fresh == 0:
+                break
+        print("endpoint#%d total unique rows: %d" % (si + 1, len(acc)))
+        if len(acc) > len(best):
+            best, best_sorted = acc, si < 2
+        if len(best) >= TARGET_TEAMS + 100:
+            break
+    return best, best_sorted
 
 
 def fetch(url: str, hdrs: dict, timeout: int = 30) -> bytes | None:

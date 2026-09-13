@@ -54,7 +54,9 @@
 "22240": "benched gods",
 "22368": "ReThink",
 "22418": "Fortress",
+"2245": "ECSTATIC",
 "22611": "BERG",
+"2264": "Linx Legacy",
 "22734": "WBT",
 "22737": "Inner Circle Academy",
 "22738": "Gatorian",
@@ -64,6 +66,7 @@
 "22898": "BOJONG",
 "22949": "Team LEISURE",
 "2305": "Eternal Fire Academy",
+"23070": "MASQ",
 "23072": "banda chuya",
 "23078": "Lavked",
 "23102": "mellren",
@@ -153,12 +156,14 @@
 "755": "MIBR",
 "757": "TYLOO",
 "759": "HEROIC",
+"765": "MOUZ",
 "776": "Luminosity",
 "785": "Ninjas in Pyjamas",
 "790": "Liquid",
 "793": "G2",
 "8118": "Legacy",
 "8221": "Alliance",
+"870": "struggletony",
 "937": "Entropy",
 "9655": "regain",
 "9728": "Banger Gang",
@@ -166,6 +171,7 @@
 },
 "tours": {
 "4204": "FISSURE Playground 3",
+"5109": "StarLadder StarSeries Fall 2026",
 "5581": "CCT Europe 2026 Series 8",
 "5584": "CCT Europe 2026 Series 9 Play-In",
 "5908": "CCT Europe 2026 Series 9",
@@ -189,6 +195,7 @@
 "6071": "Thunderpick World Championship 2026: Global Qualifier",
 "6075": "Roman Imperium Cup VIII",
 "6091": "Circuito Retake Season 12",
-"6093": "CCT South America 2026 Challengers 3"
+"6093": "CCT South America 2026 Challengers 3",
+"6094": "Dust2.dk Ligaen Season 33: Regular Season"
 }
 }

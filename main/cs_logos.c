@@ -313,7 +313,11 @@ static void pack_probe(void)
 
     // CRC 覆盖 header 之后的所有字节,分块读(5KB 栈装不下 1MB)
     uint32_t crc_run = 0;
-    uint8_t chunk[4096];
+    // CRC 覆盖 header 之后的所有字节,分块读。
+    // ⚠ 禁止改回栈缓冲:本函数跑在 main 任务栈上(cs_niko_start → cs_logos_init),
+    // main 任务栈只有 CONFIG_ESP_MAIN_TASK_STACK_SIZE。v2.1~v2.6 用栈上 chunk[4096]
+    // 直接打爆 4KB 栈 —— 症状就是开机白屏闪屏(背光亮→崩溃→重启→再白屏)。
+    static uint8_t chunk[4096];
     for (uint32_t off = PACK_HDR_SIZE; off < total; off += sizeof(chunk)) {
         uint32_t n = total - off;
         if (n > sizeof(chunk)) n = sizeof(chunk);

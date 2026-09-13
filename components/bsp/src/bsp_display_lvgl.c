@@ -16,7 +16,10 @@ lv_display_t *bsp_lvgl_init(void) {
         return NULL;
     }
 
-    const lvgl_port_cfg_t pc = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_cfg_t pc = ESP_LVGL_PORT_INIT_CONFIG();
+    // v2.x 的 on_tick 在 LVGL 任务里重建 5 屏 UI(嵌套比 demo 深得多),
+    // 默认 4096 余量不足,给到 8192 防止栈溢出再次引发白屏重启。
+    pc.task_stack = 8192;
     if (lvgl_port_init(&pc) != ESP_OK) {
         ESP_LOGE(TAG, "lvgl_port_init 失败");
         return NULL;

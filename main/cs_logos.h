@@ -9,3 +9,8 @@ void cs_logos_init(void);
 // 48x48 for score cards, 20x20 for list rows. NULL if the id is unknown.
 const lv_image_dsc_t *cs_logo_get(const char *id);
 const lv_image_dsc_t *cs_logo_get_small(const char *id);
+
+// Same, but falls back to a case/name-normalised lookup in the "csres"
+// resource pack when the embedded 105-team table misses (id empty or new).
+const lv_image_dsc_t *cs_logo_get_named(const char *id, const char *name);
+const lv_image_dsc_t *cs_logo_get_small_named(const char *id, const char *name);

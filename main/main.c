@@ -6,7 +6,7 @@
 #include "bsp_display.h"
 #include "bsp_i2c.h"
 
-#include "cs_app.h"
+#include "cs_niko.h"
 #include "cs_data.h"
 #include "cs_net.h"
 
@@ -42,7 +42,7 @@ static void key_task(void *arg)
     for (;;) {
         if (xQueueReceive(s_keyq, &e, portMAX_DELAY) != pdTRUE) continue;
         if (!bsp_lvgl_lock(1000)) continue;
-        cs_app_key((bsp_btn_t)e.btn, (bsp_btn_ev_t)e.ev);
+        cs_niko_key((bsp_btn_t)e.btn, (bsp_btn_ev_t)e.ev);
         bsp_lvgl_unlock();
     }
 }
@@ -74,7 +74,7 @@ void app_main(void)
     }
 
     if (bsp_lvgl_lock(1000)) {
-        cs_app_start();
+        cs_niko_start();
         bsp_lvgl_unlock();
     }
 

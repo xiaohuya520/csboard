@@ -4,7 +4,8 @@ idf_component_register(
          "cs_data.c"
          "cs_net.c"
          "cs_portal.c"
-         "cs_app.c"
+         "cs_niko.c"
+         "cs_avatar.c"
          "cs_logos.c"
          "cs_logo_data.c"
          "cs_font_cn16.c"
@@ -23,4 +24,6 @@ idf_component_register(
              esp-tls
              esp_partition
              lwip
+             esp_hw_support
+             driver
 )

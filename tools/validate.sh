@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 构建 + 合并 + 校验。CI 用 ./tools/validate.sh --firmware。
+# 构建 + 合并 + 校验 + (尽力)打包 200 队队标资源。CI 用 ./tools/validate.sh --firmware。
 #
-# 注意:本工程的队标与中文字体是**编译期编入 app** 的(见 main/cs_logo_data.c 与
-# main/cs_font_cn16.c),没有需要注入的资源分区。旧工程那套"合并后再往 csres 分区
-# 里打补丁"的步骤在这里被彻底去掉了 —— 少一个后处理,就少一类静默损坏。
+# 队标分两层:105 队内嵌在 app(cs_logo_data.c),另有 "csres" 资源分区容纳
+# 世界前 200 队的扩展包(gen_logo_pack.py 在 CI 内联网抓取生成,splice_res.py
+# 拼进整片镜像)。抓取/打包失败不影响构建 —— 固件自动退回内嵌层。
 set -euo pipefail
 
 mode="${1:---all}"
@@ -30,6 +30,18 @@ run_firmware_checks() (
     mkdir -p "${repo_root}/build"
     install -m 0644 "${build_dir}/csboard-full.bin" "${repo_root}/build/csboard-full.bin"
     echo "Firmware build: PASS"
+
+    # 200 队队标资源包:要联网抓 bo3.gg 排名 + Pillow 解图,均为尽力而为;
+    # 任一步失败就跳过,产物即纯内嵌固件(verify_firmware.py 在拼接前已通过,
+    # splice_res.py 自身再断言保护区逐字节未动)。
+    if python3 -m pip install --quiet pillow >/dev/null 2>&1 \
+        && python3 tools/gen_logo_pack.py "${build_dir}/csres.bin" \
+        && python3 tools/splice_res.py \
+            "${repo_root}/build/csboard-full.bin" "${build_dir}/csres.bin"; then
+        echo "Logo resource pack: OK"
+    else
+        echo "Logo resource pack: skipped (embedded-only firmware)"
+    fi
 )
 
 run_data_check() {

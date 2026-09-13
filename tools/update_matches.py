@@ -38,6 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 ALIAS_FILE = os.path.join(HERE, "team_aliases.json")
 CACHE_FILE = os.path.join(HERE, "bo3_cache.json")
+NIKO_FILE = os.path.join(HERE, "niko_profile.json")
 
 BASE = "https://api.bo3.gg/api/v1"
 BEIJING = timezone(timedelta(hours=8))
@@ -50,6 +51,39 @@ SIZE_BUDGET = 12000           # bytes; firmware buffer is 16384
 # 只留这个级别以上的赛事,否则板子上全是青训/海选噪音。
 # tier_rank: 1=s 2=a 3=b 4=c 5=d
 MAX_TIER_RANK = 3
+
+# ---------------------------------------------------------------------------
+# NiKo 生涯块(看板第 3 屏的数据源)
+#
+# 数据不写死在本脚本里,而是读同目录的 niko_profile.json —— 换选手/改战绩只动
+# 那个文件,不用碰管道代码。键名即固件 main/cs_data.c 里 cs_niko_t 的字段名,
+# 裁剪长度也照搬那边的 char 数组(留 1 字节给结尾的 NUL)。
+# ---------------------------------------------------------------------------
+NIKO_MAX_BYTES = 900          # 生涯块单独限额,防止它把赛程挤掉(总预算 12000)
+
+# (键名, 固件缓冲字节数或 None 表示数字, 类型)
+NIKO_FIELDS = (
+    ("name",     24, str),
+    ("realname", 32, str),
+    ("team",     20, str),
+    ("logo",     24, str),
+    ("color",    16, str),
+    ("role",     24, str),
+    ("rating",   None, float),
+    ("kd",       None, float),
+    ("adr",      None, float),
+    ("kast",     None, float),
+    ("impact",   None, float),
+    ("maps",     None, int),
+    ("majors",   None, int),
+    ("mvp",      None, int),
+    ("earnings", None, int),
+    ("years",    16, str),
+    ("age",      None, int),
+)
+
+# 预算超了按这个顺序丢(先丢最不影响信息的),保证核心战绩一定发得出去
+NIKO_DROPPABLE = ("years", "realname", "role")
 
 HDRS = {
     # bo3.gg 会挡掉没有 Origin 的请求(实测:本机与运行器都要求这两个头)。
@@ -361,6 +395,68 @@ def build_match(m: dict, aliases: dict[str, str], cache: NameCache):
     }
 
 
+def load_niko() -> dict | None:
+    """把 tools/niko_profile.json 翻成固件能直接吃的顶层 "niko" 块。
+
+    与 cs_niko_t 严格对齐:白名单外的键一律丢掉(固件不认,还会白占字节),
+    字符串按固件 char 数组长度裁剪(按 UTF-8 字节,避免截半个汉字变乱码),
+    数字做类型收敛(JSON 里写成字符串也不会把板子的 jfloat 打回默认值)。
+
+    读不到文件或字段全空就返回 None —— 此时固件会退回内置示例,而不是显示空白。
+    """
+    try:
+        with open(NIKO_FILE, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print("warn: cannot load %s (%s); career block skipped"
+              % (NIKO_FILE, exc), file=sys.stderr)
+        return None
+    if not isinstance(raw, dict):
+        print("warn: %s is not an object; career block skipped" % NIKO_FILE,
+              file=sys.stderr)
+        return None
+
+    out: dict = {}
+    for key, cap, kind in NIKO_FIELDS:
+        if key not in raw or raw[key] is None:
+            continue
+        val = raw[key]
+        try:
+            if kind is str:
+                s = str(val).strip()
+                if s:
+                    out[key] = clip_bytes(s, cap - 1)
+            elif kind is float:
+                out[key] = round(float(val), 2)
+            else:
+                out[key] = int(float(val))
+        except (TypeError, ValueError):
+            print("warn: niko.%s=%r is not a %s; dropped" % (key, val, kind.__name__),
+                  file=sys.stderr)
+
+    if not out:
+        return None
+
+    # 限额:超了先丢次要文本字段,再不行就缩 role/realname 的裁剪长度。
+    for key in NIKO_DROPPABLE:
+        if len(encode(out)) <= NIKO_MAX_BYTES:
+            break
+        if out.pop(key, None) is not None:
+            print("warn: niko block over %d B, dropped '%s'" % (NIKO_MAX_BYTES, key),
+                  file=sys.stderr)
+    while len(encode(out)) > NIKO_MAX_BYTES:
+        longest = max((k for k, _, kind in NIKO_FIELDS
+                       if kind is str and k in out),
+                      key=lambda k: len(out[k].encode("utf-8")), default=None)
+        if not longest or len(out[longest]) <= 6:
+            print("warn: niko block cannot fit %d B, keeping %d B"
+                  % (NIKO_MAX_BYTES, len(encode(out))), file=sys.stderr)
+            break
+        out[longest] = clip_bytes(out[longest], max(6, len(out[longest]) - 8))
+
+    return out
+
+
 def encode(data: dict) -> bytes:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -370,10 +466,16 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(ROOT, "cs_matches.json"))
     ap.add_argument("--days-back", type=int, default=3)
     ap.add_argument("--days-fwd", type=int, default=7)
+    ap.add_argument("--no-niko", action="store_true",
+                    help="不注入 niko 生涯块(排查用;固件会退回内置示例)")
     args = ap.parse_args()
 
     aliases = load_aliases()
     cache = NameCache()
+    niko = None if args.no_niko else load_niko()
+    if niko:
+        print("career block: %d bytes (%s / %s)"
+              % (len(encode(niko)), niko.get("name", "?"), niko.get("team", "?")))
     now = datetime.now(BEIJING)
     lo = now - timedelta(days=args.days_back)
     hi = now + timedelta(days=args.days_fwd)
@@ -440,6 +542,8 @@ def main() -> int:
             "source": "bo3.gg",
             "matches": [],
         }
+        if niko:
+            out["niko"] = niko
         for m in rs:
             out["matches"].append({k: v for k, v in m.items() if not k.startswith("_")})
         return out
@@ -461,12 +565,13 @@ def main() -> int:
 
     ms = data["matches"]
     with_scores = sum(1 for m in ms for mp in m.get("maps", []) if (mp["s1"] or mp["s2"]))
-    print("wrote %s: %d matches (%d live / %d finished / %d upcoming), %d bytes"
+    print("wrote %s: %d matches (%d live / %d finished / %d upcoming), %d bytes%s"
           % (args.out, len(ms),
              sum(1 for m in ms if m["status"] == "live"),
              sum(1 for m in ms if m["status"] == "finished"),
              sum(1 for m in ms if m["status"] == "upcoming"),
-             len(blob)))
+             len(blob),
+             (" incl. niko %d B" % len(encode(data["niko"]))) if "niko" in data else ""))
     print("maps with real round scores: %d" % with_scores)
     for m in ms[:4]:
         print("   %-8s %-26s %s vs %s  %d:%d  maps=%s"

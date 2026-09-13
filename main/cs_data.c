@@ -15,7 +15,8 @@ static const char *TAG = "cs_data";
 
 #define CS_NVS_PART   "csdata"   // partitions.csv 里 cardid 之后的 64KB 数据分区
 #define CS_NVS_NS     "cs"
-#define CS_NVS_JSON   "json"
+#define CS_NVS_JSON   "json"     // 旧键(字符串),仅保留用于读取兼容
+#define CS_NVS_JSON_B "jsonb"    // 现用键:blob 存整份 JSON
 
 #define CS_JSON_MAX   16384      // 单份 JSON 上限(下载缓冲与缓存同限)
 
@@ -270,7 +271,11 @@ static esp_err_t cache_save(const char *json)
     nvs_handle_t h;
     esp_err_t err = kv_open(NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    err = nvs_set_str(h, CS_NVS_JSON, json);
+    // 必须用 blob:NVS 单条字符串上限 4000 字节,而赛程 JSON 已 6KB+,
+    // nvs_set_str 会直接返回 ESP_ERR_NVS_VALUE_TOO_LONG —— 缓存永远写不进去,
+    // 表现为"每次冷启动都退回内置示例"。blob 只受分区容量限制(csdata 有 64KB)。
+    // 连结尾的 NUL 一起存,读出来就是现成的 C 字符串。
+    err = nvs_set_blob(h, CS_NVS_JSON_B, json, strlen(json) + 1);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
@@ -281,8 +286,15 @@ static esp_err_t cache_load(char *out, size_t cap)
     nvs_handle_t h;
     esp_err_t err = kv_open(NVS_READONLY, &h);
     if (err != ESP_OK) return err;
+
     size_t len = cap;
-    err = nvs_get_str(h, CS_NVS_JSON, out, &len);
+    err = nvs_get_blob(h, CS_NVS_JSON_B, out, &len);
+    if (err == ESP_OK) {
+        out[(len > 0 && len < cap) ? len - 1 : cap - 1] = '\0';
+    } else if (err == ESP_ERR_NVS_NOT_FOUND || err == ESP_ERR_NVS_TYPE_MISMATCH) {
+        len = cap;                       // 兼容旧固件留下的字符串键
+        err = nvs_get_str(h, CS_NVS_JSON, out, &len);
+    }
     nvs_close(h);
     return err;
 }

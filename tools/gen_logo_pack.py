@@ -86,8 +86,8 @@ def fetch_teams():
         if len(first) >= 100:               # 可能被截断,翻页补
             for page in range(2, 8):
                 got = False
-                for style in ("page%5Bnumber%5D=%d", "page=%d"):
-                    d = as_list(fetch_json(f"{ep}&{style % page}"))
+                for style in (lambda n: f"page%5Bnumber%5D={n}", lambda n: f"page={n}"):
+                    d = as_list(fetch_json(f"{ep}&{style(page)}"))
                     if d and _absorb_probe(acc, seen, d):
                         got = True
                         break

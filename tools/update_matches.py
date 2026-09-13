@@ -348,12 +348,18 @@ def fetch_falcons(status: str, sort: str, limit: int, fid: str | None) -> list[d
 
 
 def is_falcons(m: dict, fid: str | None, cache: NameCache) -> bool:
-    """这条比赛是否涉及法尔孔(按 id 或解析后的队名判断)。"""
+    """这条比赛是否涉及法尔孔(按 id 或解析后的队名判断)。
+
+    注意:队名归一后只认真正的『法尔孔』战队 —— 排除 Falcons Force 这类青训/二队,
+    否则它们会混进法尔孔的赛程。id 命中永远优先(最准)。
+    """
     if fid and (str(m.get("team1_id")) == str(fid) or str(m.get("team2_id")) == str(fid)):
         return True
-    n1 = norm(cache.team(m.get("team1_id")))
-    n2 = norm(cache.team(m.get("team2_id")))
-    return "falcons" in n1 or "falcons" in n2
+    for tid in (m.get("team1_id"), m.get("team2_id")):
+        nm = norm(cache.team(tid))
+        if "falcons" in nm and "force" not in nm:
+            return True
+    return False
 
 
 def parse_when(s: str):

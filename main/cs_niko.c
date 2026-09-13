@@ -78,6 +78,7 @@ static int  s_idx_live[CS_MAX_MATCHES];
 static int  s_n_live;
 static int  s_idx_hist[CS_MAX_MATCHES];
 static int  s_n_hist;
+static bool s_scope_all;        // true = 关注战队无场次,当前显示的是全部比赛
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_bar_l, *s_bar_c, *s_bar_r, *s_bar_batt, *s_bar_line;
@@ -207,12 +208,44 @@ static const char *status_cn(const char *st)
 }
 
 // ---------------------------------------------------------------------------
-// 索引(把 live / finished 比赛挑出来)
+// 索引:优先挑"关注战队"的比赛;该状态下一场都没有时,才回退到全部比赛。
+// 数据源是 bo3.gg 的全局赛程,未必时刻有 Falcons 的场次,所以必须留这个兜底,
+// 否则主界面大多数时候是空的。
 // ---------------------------------------------------------------------------
+static bool is_follow(const cs_match_t *m, const char *ft)
+{
+    if (!m || !ft || !ft[0]) return false;
+    return ieq(m->t1_name, ft) || ieq(m->t2_name, ft) ||
+           ieq(m->t1_short, ft) || ieq(m->t2_short, ft);
+}
+
+static int collect(const char *st, const char *ft, int *out, int max)
+{
+    const cs_data_t *d = cs_data();
+    int n = 0;
+    if (ft && ft[0]) {
+        for (int i = 0; i < d->count && n < max; i++)
+            if (ieq(d->m[i].status, st) && is_follow(&d->m[i], ft)) out[n++] = i;
+        if (n) return n;
+    }
+    for (int i = 0; i < d->count && n < max; i++)
+        if (!st || ieq(d->m[i].status, st)) out[n++] = i;
+    return n;
+}
+
 static void refresh_indices(void)
 {
-    s_n_live = cs_data_filter(CS_ST_LIVE, s_idx_live, CS_MAX_MATCHES);
-    s_n_hist = cs_data_filter(CS_ST_FINISHED, s_idx_hist, CS_MAX_MATCHES);
+    const char *ft = cs_follow_team();
+    s_n_live = collect(CS_ST_LIVE,     ft, s_idx_live, CS_MAX_MATCHES);
+    s_n_hist = collect(CS_ST_FINISHED, ft, s_idx_hist, CS_MAX_MATCHES);
+
+    // 关注战队在当前状态下没有场次 → 回退成全局视图(状态栏会标"全部")
+    const cs_data_t *d = cs_data();
+    int mine = 0;
+    for (int i = 0; i < d->count; i++)
+        if (is_follow(&d->m[i], ft)) { mine = 1; break; }
+    s_scope_all = (mine == 0);
+
     int cap = (s_view == V_HIST) ? s_n_hist : s_n_live;
     if (s_sel >= cap) s_sel = 0;
     if (s_sel < 0)    s_sel = 0;
@@ -225,10 +258,17 @@ static void render_status(void)
 {
     char buf[80];
 
-    if (s_view == V_MATCH && s_n_live > 1)
-        snprintf(buf, sizeof(buf), "当前比赛 %d/%d", s_sel + 1, s_n_live);
-    else
-        snprintf(buf, sizeof(buf), "%s", V_NAME[s_view]);
+    int cnt = (s_view == V_HIST) ? s_n_hist : s_n_live;
+    if (s_scope_all) {
+        // 关注战队没有场次 → 明确告诉用户当前看的是全局赛程
+        if (cnt > 1) snprintf(buf, sizeof(buf), "全部%d/%d", s_sel + 1, cnt);
+        else         scpy(buf, sizeof(buf), "全部比赛");
+    } else if (cnt > 1) {
+        snprintf(buf, sizeof(buf), "%s%d/%d",
+                 (s_view == V_HIST) ? "战绩" : "当前", s_sel + 1, cnt);
+    } else {
+        scpy(buf, sizeof(buf), V_NAME[s_view]);
+    }
     lv_label_set_text(s_bar_l, buf);
 
     const char *src = cs_data_source();
@@ -617,6 +657,7 @@ static void on_tick(lv_timer_t *t)
 {
     (void)t;
     cs_net_tick();
+    refresh_indices();   // 数据/关注战队可能刚变,先重算索引,状态栏才准
 
     uint32_t rev = cs_data_rev();
     if (rev != s_seen_rev) { s_seen_rev = rev; s_dirty = true; }
@@ -676,10 +717,12 @@ void cs_niko_start(void)
     lv_obj_set_style_border_width(s_scr, 0, 0);
     lv_obj_set_style_pad_all(s_scr, 0, 0);
 
+    // 顶栏左:状态/页码;中:网络;右:时间;最右:电量。
+    // 中文 16px 字宽约 16px,「全部1/4」约 56px,故左栏给 64px 够用。
     s_bar_l = label(s_scr, 6, 4, "", &font_cn16, C_INK);
-    lv_obj_set_width(s_bar_l, 58); one_line(s_bar_l, 58);
-    s_bar_c = label(s_scr, 66, 4, "", &font_cn16, C_MUTED);
-    lv_obj_set_width(s_bar_c, 94); one_line(s_bar_c, 94);
+    lv_obj_set_width(s_bar_l, 64); one_line(s_bar_l, 64);
+    s_bar_c = label(s_scr, 72, 4, "", &font_cn16, C_MUTED);
+    lv_obj_set_width(s_bar_c, 88); one_line(s_bar_c, 88);
     s_bar_r = label(s_scr, 162, 5, "", &lv_font_montserrat_14, C_MUTED);
     lv_obj_set_width(s_bar_r, 40); lv_obj_set_style_text_align(s_bar_r, LV_TEXT_ALIGN_RIGHT, 0);
     s_bar_batt = label(s_scr, 204, 5, "", &lv_font_montserrat_14, C_MUTED);

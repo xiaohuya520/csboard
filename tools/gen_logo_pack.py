@@ -45,14 +45,84 @@ IMG_HDRS = {
     "Accept": "image/avif,image/webp,image/png,image/*,*/*;q=0.8",
 }
 
-# 端点候选:CI 实测无 sort 的 teams?page[limit]=100 可用且 page[number] 翻页
-# 有效;带 sort=-rating 会 422。排序参数能成就成,不成就按默认序全量抓
-# (固件按队名查表,抓全量比抓排序更利于覆盖前 200)。
+# 端点候选:CI 实测 teams?page[limit]=100 可用;limit=250 会 422(上限 100),
+# page[number] 被忽略 —— 所以先试大 limit 一页拿满,不行再在翻页时用
+# page[number] / page 两种风格自动探测。
 TEAM_ENDPOINTS = (
-    "teams?page%5Blimit%5D=100&sort=-rating",
-    "teams?page%5Blimit%5D=100&sort=-teams.rating",
+    "teams?page%5Blimit%5D=300",
+    "teams?page%5Blimit%5D=200",
     "teams?page%5Blimit%5D=100",
 )
+
+
+def _absorb(acc, seen, rows):
+    """把 rows 里没见过的新行加进 acc,返回新增数。"""
+    fresh = 0
+    for t in rows:
+        k = None
+        if isinstance(t, dict):
+            k = t.get("id") or norm(t.get("slug") or t.get("name") or "")
+        if k and k in seen:
+            continue
+        if k:
+            seen.add(k)
+        acc.append(t)
+        fresh += 1
+    return fresh
+
+
+def fetch_teams():
+    """先试大 limit 一页拿满;不行则翻页(双风格探测),按新增行数判停。"""
+    best = []
+    for si, ep in enumerate(TEAM_ENDPOINTS):
+        acc, seen = [], set()
+        first = as_list(fetch_json(ep))
+        if not first:
+            print("endpoint#%d -> unavailable" % (si + 1))
+            continue
+        acc.extend(first)
+        fresh = _absorb(acc, seen, first)   # 首页去重计数
+        print("endpoint#%d page1 -> %d rows" % (si + 1, len(first)))
+        if len(first) >= 100:               # 可能被截断,翻页补
+            for page in range(2, 8):
+                got = False
+                for style in ("page%5Bnumber%5D=%d", "page=%d"):
+                    d = as_list(fetch_json(f"{ep}&{style % page}"))
+                    if d and _absorb_probe(acc, seen, d):
+                        got = True
+                        break
+                print("endpoint#%d page%d -> %s" % (si + 1, page, "new rows" if got else "no new rows"))
+                if not got:
+                    break
+        print("endpoint#%d total unique rows: %d" % (si + 1, len(acc)))
+        if len(acc) > len(best):
+            best = acc
+        if len(best) >= TARGET_TEAMS + 150:
+            break
+    return best
+
+
+def _absorb_probe(acc, seen, rows):
+    """探测性吸收:复制 seen 试加,有新行才真正落账(避免翻页风格污染数据)。"""
+    trial = dict(seen)
+    add = []
+    for t in rows:
+        k = None
+        if isinstance(t, dict):
+            k = t.get("id") or norm(t.get("slug") or t.get("name") or "")
+        if k and k in trial:
+            continue
+        if k:
+            trial[k] = True
+        add.append(t)
+    if not add:
+        return False
+    for t in add:
+        k = t.get("id") or norm(t.get("slug") or t.get("name") or "") if isinstance(t, dict) else None
+        if k:
+            seen.add(k)
+        acc.append(t)
+    return True
 
 
 def fetch(url: str, hdrs: dict, timeout: int = 30) -> bytes | None:
@@ -169,37 +239,6 @@ def image_to_rgb565(png: bytes, edge: int):
     except Exception as exc:  # noqa: BLE001
         print("warn: decode/resize failed (%s)" % exc, file=sys.stderr)
         return None
-
-
-def fetch_teams():
-    """翻页抓队伍,按新增行数判停;返回行数最多的候选。"""
-    best = []
-    for si, ep in enumerate(TEAM_ENDPOINTS):
-        acc, seen = [], set()
-        for page in (1, 2, 3, 4, 5, 6):
-            d = as_list(fetch_json(f"{ep}&page%5Bnumber%5D={page}"))
-            if not d:
-                break
-            fresh = 0
-            for t in d:
-                k = None
-                if isinstance(t, dict):
-                    k = t.get("id") or norm(t.get("slug") or t.get("name") or "")
-                if k and k in seen:
-                    continue
-                if k:
-                    seen.add(k)
-                acc.append(t)
-                fresh += 1
-            print("endpoint#%d page%d -> %d rows (%d new)" % (si + 1, page, len(d), fresh))
-            if fresh == 0:
-                break
-        print("endpoint#%d total unique rows: %d" % (si + 1, len(acc)))
-        if len(acc) > len(best):
-            best = acc
-        if len(best) >= TARGET_TEAMS + 150:
-            break
-    return best
 
 
 def main() -> int:

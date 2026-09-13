@@ -422,11 +422,10 @@ static void build_hist(lv_obj_t *p)
     one_line(ev, 180);
 
     int y = base + 20;
-    snprintf(buf, sizeof(buf), "%s %d:%d %s",
-             my_t1 ? m->t2_name : m->t1_name,
-             my_t1 ? m->score2 % 1000 : m->score1 % 1000,
-             my_t1 ? m->score1 % 1000 : m->score2 % 1000,
-             m->date);
+    // 固定按 t1 : t2 顺序展示,避免"我方/对手"倒装后把比分读反;
+    // 胜负由上一行的「胜/负」标签按我方视角给出。
+    snprintf(buf, sizeof(buf), "%s %d:%d %s  %s",
+             m->t1_name, m->score1 % 1000, m->score2 % 1000, m->t2_name, m->date);
     lv_obj_t *ln = label(p, 6, y, buf, &font_cn16, C_INK);
     one_line(ln, 228);
 

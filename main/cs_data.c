@@ -20,6 +20,7 @@ static const char *TAG = "cs_data";
 #define CS_JSON_MAX   16384      // 单份 JSON 上限(下载缓冲与缓存同限)
 
 static cs_data_t        s_data;
+static cs_niko_t        s_niko;
 static bool             s_from_net;
 static uint32_t         s_rev;
 static cs_fetch_state_t s_fetch = CS_FETCH_IDLE;
@@ -46,8 +47,8 @@ static const cs_data_t k_builtin = {
         {
             .event = "ESL 职业联赛 S21", .stage = "小组赛", .date = "09-11", .time = "20:00",
             .bo = "BO3", .status = CS_ST_LIVE,
-            .t1_name = "G2", .t1_logo = "g2", .t1_color = 0xE4AE39,
-            .t2_name = "NAVI", .t2_logo = "navi", .t2_color = 0xF2E14C,
+            .t1_name = "Falcons", .t1_logo = "falcons", .t1_color = 0xE43B2F,
+            .t2_name = "Vitality", .t2_logo = "vitality", .t2_color = 0xFFD928,
             .score1 = 1, .score2 = 1, .map_count = 3,
             .maps = {
                 { "Inferno", "炼狱小镇", 13, 9, 1 },
@@ -58,7 +59,7 @@ static const cs_data_t k_builtin = {
         {
             .event = "BLAST 世界总决赛", .stage = "半决赛", .date = "09-10", .time = "22:30",
             .bo = "BO3", .status = CS_ST_FINISHED,
-            .t1_name = "Vitality", .t1_logo = "vitality", .t1_color = 0xFFD928,
+            .t1_name = "Falcons", .t1_logo = "falcons", .t1_color = 0xE43B2F,
             .t2_name = "MOUZ", .t2_logo = "mouz", .t2_color = 0xE43B2F,
             .score1 = 2, .score2 = 0, .map_count = 2,
             .maps = { { "Dust2", "炙热沙城", 13, 7, 1 }, { "Ancient", "远古遗迹", 13, 10, 1 } },
@@ -66,7 +67,7 @@ static const cs_data_t k_builtin = {
         {
             .event = "IEM 卡托维兹", .stage = "四分之一决赛", .date = "09-09", .time = "19:00",
             .bo = "BO3", .status = CS_ST_FINISHED,
-            .t1_name = "Spirit", .t1_logo = "spirit", .t1_color = 0x8C6239,
+            .t1_name = "Falcons", .t1_logo = "falcons", .t1_color = 0xE43B2F,
             .t2_name = "FaZe", .t2_logo = "faze", .t2_color = 0xB01C24,
             .score1 = 1, .score2 = 2, .map_count = 3,
             .maps = {
@@ -78,11 +79,32 @@ static const cs_data_t k_builtin = {
         {
             .event = "ESL 职业联赛 S21", .stage = "小组赛", .date = "09-12", .time = "18:00",
             .bo = "BO3", .status = CS_ST_UPCOMING,
-            .t1_name = "TYLOO", .t1_logo = "tyloo", .t1_color = 0xD7182A,
-            .t2_name = "Rare Atom", .t2_short = "RA", .t2_logo = "rareatom", .t2_color = 0x7B4FBF,
+            .t1_name = "Falcons", .t1_logo = "falcons", .t1_color = 0xE43B2F,
+            .t2_name = "G2", .t2_logo = "g2", .t2_color = 0xE4AE39,
             .score1 = 0, .score2 = 0, .map_count = 0,
         },
     },
+};
+
+// NiKo 内置示例(断网首次开机的兜底;与线上 JSON 的 niko 字段一致)
+static const cs_niko_t k_niko_builtin = {
+    .name      = "NiKo",
+    .realname  = "Nikola Kovač",
+    .team      = "Falcons",
+    .team_logo = "falcons",
+    .team_color= 0xE43B2F,
+    .role      = "步枪手 / 指挥",
+    .rating    = 1.12f,
+    .kd        = 1.08f,
+    .adr       = 78.5f,
+    .kast      = 74.3f,
+    .impact    = 1.05f,
+    .maps      = 1480,
+    .majors    = 0,
+    .mvp       = 21,
+    .earnings  = 190,
+    .years     = "2009-至今",
+    .age       = 28,
 };
 
 // ---------------------------------------------------------------------------
@@ -140,8 +162,14 @@ static int jint(cJSON *o, const char *key, int def)
     return cJSON_IsNumber(j) ? j->valueint : def;
 }
 
+static float jfloat(cJSON *o, const char *key, float def)
+{
+    cJSON *j = o ? cJSON_GetObjectItem(o, key) : NULL;
+    return (j && cJSON_IsNumber(j)) ? (float)j->valuedouble : def;
+}
+
 // 解析到调用方提供的结构体(必须是堆上的:cs_data_t 约 10KB,绝不能放任务栈)。
-static bool parse_into(const char *json, cs_data_t *out)
+static bool parse_into(const char *json, cs_data_t *out, cs_niko_t *nk_out)
 {
     cJSON *root = cJSON_Parse(json);
     if (!root) {
@@ -208,6 +236,28 @@ static bool parse_into(const char *json, cs_data_t *out)
         out->count++;
     }
 
+    // NiKo 衍生字段(缺失则保留内置示例,避免空指针)
+    cJSON *nk = cJSON_GetObjectItem(root, "niko");
+    if (nk && cJSON_IsObject(nk) && nk_out) {
+        jstr(nk, "name",      nk_out->name,      sizeof(nk_out->name),      "NiKo");
+        jstr(nk, "realname",  nk_out->realname,  sizeof(nk_out->realname),  "");
+        jstr(nk, "team",      nk_out->team,      sizeof(nk_out->team),      "");
+        jstr(nk, "logo",      nk_out->team_logo, sizeof(nk_out->team_logo), "");
+        nk_out->team_color = jcolor(nk, "color", 0xE43B2F);
+        jstr(nk, "role",      nk_out->role,      sizeof(nk_out->role),      "");
+        nk_out->rating   = jfloat(nk, "rating", 0);
+        nk_out->kd       = jfloat(nk, "kd", 0);
+        nk_out->adr      = jfloat(nk, "adr", 0);
+        nk_out->kast     = jfloat(nk, "kast", 0);
+        nk_out->impact   = jfloat(nk, "impact", 0);
+        nk_out->maps     = jint(nk, "maps", 0);
+        nk_out->majors   = jint(nk, "majors", 0);
+        nk_out->mvp      = jint(nk, "mvp", 0);
+        nk_out->earnings = jint(nk, "earnings", 0);
+        jstr(nk, "years", nk_out->years, sizeof(nk_out->years), "");
+        nk_out->age      = jint(nk, "age", 0);
+    }
+
     cJSON_Delete(root);
     return out->count > 0;
 }
@@ -245,6 +295,10 @@ bool             cs_data_is_from_net(void) { return s_from_net; }
 const char      *cs_data_source(void) { return s_data.source; }
 uint32_t         cs_data_rev(void)    { return s_rev; }
 
+const cs_niko_t *cs_niko(void)         { return &s_niko; }
+const char      *cs_follow_team(void)  { return s_niko.team; }
+void             cs_niko_use_builtin(void) { s_niko = k_niko_builtin; }
+
 int cs_data_filter(const char *st, int *idx_out, int max)
 {
     int n = 0;
@@ -258,6 +312,7 @@ int cs_data_filter(const char *st, int *idx_out, int max)
 void cs_data_use_builtin(void)
 {
     s_data = k_builtin;
+    s_niko = k_niko_builtin;
     s_from_net = false;
     s_rev++;
     scpy(s_fetch_msg, sizeof(s_fetch_msg), "内置示例数据");
@@ -273,7 +328,7 @@ bool cs_data_apply_json(const char *json, bool persist, const char *src)
         ESP_LOGE(TAG, "解析缓冲分配失败");
         return false;
     }
-    bool ok = parse_into(json, tmp);
+    bool ok = parse_into(json, tmp, &s_niko);
     if (!ok) {
         free(tmp);
         return false;
@@ -309,7 +364,7 @@ esp_err_t cs_data_load_persisted(void)
     cs_data_t *tmp = (cs_data_t *)malloc(sizeof(cs_data_t));
     if (!tmp) { free(buf); cs_data_use_builtin(); return ESP_ERR_NO_MEM; }
 
-    bool ok = parse_into(buf, tmp);
+    bool ok = parse_into(buf, tmp, &s_niko);
     free(buf);
     if (!ok) {
         free(tmp);

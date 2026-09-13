@@ -11,8 +11,6 @@
 #include "lvgl.h"
 #include <string.h>
 
-static const char *TAG = "cs_avatar";
-
 // 取一个尺寸内的居中矩形(去掉滚动标志),统一封装避免重复
 static lv_obj_t *box(lv_obj_t *parent, int x, int y, int w, int h,
                      uint32_t bg, uint32_t border)

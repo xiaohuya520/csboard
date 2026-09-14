@@ -1,5 +1,6 @@
 {
 "teams": {
+"10014": "aimclub",
 "10049": "Galorys",
 "10088": "Vexar",
 "1024": "INFINITE",
@@ -31,6 +32,7 @@
 "19100": "Iberian Soul",
 "19186": "Inner Circle",
 "19187": "Marsborne",
+"19204": "Phantom",
 "19734": "PEAK",
 "200": "SINNERS",
 "20369": "SPARTA",
@@ -40,6 +42,7 @@
 "20952": "Misa",
 "21012": "Falcons Force",
 "21049": "Huskies eSport",
+"21062": "ASTRAL",
 "21069": "Elite Klan",
 "21388": "Nemesis",
 "21550": "SportsBetExpert",
@@ -104,6 +107,7 @@
 "25011": "MEIA NOITE",
 "25063": "REVENIX",
 "25070": "Giant Pandas",
+"25134": "Aritmije",
 "25139": "Underworld",
 "25159": "Color",
 "25188": "Sementes do Mal",
@@ -154,9 +158,11 @@
 "441": "NAVI Junior",
 "464": "100 Thieves",
 "476": "Lynn Vision",
+"495": "9INE",
 "5109": "Permitta",
 "5147": "Reveal",
 "5345": "LAG",
+"5702": "Rune Eaters",
 "5716": "INFURITY",
 "5933": "Leo",
 "594": "GamerLegion",
@@ -222,6 +228,7 @@
 "6091": "Circuito Retake Season 12",
 "6093": "CCT South America 2026 Challengers 3",
 "6094": "Dust2.dk Ligaen Season 33: Regular Season",
-"6100": "Circuit X Curitiba 3"
+"6100": "Circuit X Curitiba 3",
+"6101": "Stake Ranked Episode 5: Open Qualifier"
 }
 }
